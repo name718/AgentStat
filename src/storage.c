@@ -739,6 +739,68 @@ int load_model_pricing(AgentModelStats stats[], int max_models) {
     while(count<max_models&&sqlite3_step(stmt)==SQLITE_ROW){AgentModelStats *row=&stats[count++];memset(row,0,sizeof(*row));snprintf(row->source,sizeof(row->source),"%s",sqlite3_column_text(stmt,0));snprintf(row->model,sizeof(row->model),"%s",sqlite3_column_text(stmt,1));row->pricing_configured=true;row->input_rate=sqlite3_column_double(stmt,2);row->cache_read_rate=sqlite3_column_double(stmt,3);row->cache_write_rate=sqlite3_column_double(stmt,4);row->output_rate=sqlite3_column_double(stmt,5);}sqlite3_finalize(stmt);sqlite3_close(db);return count;
 }
 
+int load_period_stats(AgentPeriodStats stats[], int max_rows, const char *period) {
+    if(!stats||max_rows<=0||!period)return -1;
+    const char *bucket_expr=NULL;
+    const char *calendar_start=NULL,*calendar_step=NULL;
+    if(strcmp(period,"day")==0){bucket_expr="date(%s,'localtime')";calendar_start="date('now','localtime')";calendar_step="-1 day";}
+    else if(strcmp(period,"week")==0){bucket_expr="date(%s,'localtime','-' || ((CAST(strftime('%%w',%s,'localtime') AS INTEGER)+6) %% 7) || ' days')";calendar_start="date('now','localtime','-' || ((CAST(strftime('%w','now','localtime') AS INTEGER)+6) % 7) || ' days')";calendar_step="-7 days";}
+    else if(strcmp(period,"month")==0){bucket_expr="strftime('%%Y-%%m-01',%s,'localtime')";calendar_start="strftime('%Y-%m-01','now','localtime')";calendar_step="-1 month";}
+    else return -1;
+
+    char session_bucket[256],usage_bucket[256],tool_bucket[256],code_bucket[256];
+    if(strcmp(period,"week")==0){
+        snprintf(session_bucket,sizeof(session_bucket),bucket_expr,"s.started_at","s.started_at");
+        snprintf(usage_bucket,sizeof(usage_bucket),bucket_expr,"u.timestamp","u.timestamp");
+        snprintf(tool_bucket,sizeof(tool_bucket),bucket_expr,"t.timestamp","t.timestamp");
+        snprintf(code_bucket,sizeof(code_bucket),bucket_expr,"c.timestamp","c.timestamp");
+    }else{
+        snprintf(session_bucket,sizeof(session_bucket),bucket_expr,"s.started_at");
+        snprintf(usage_bucket,sizeof(usage_bucket),bucket_expr,"u.timestamp");
+        snprintf(tool_bucket,sizeof(tool_bucket),bucket_expr,"t.timestamp");
+        snprintf(code_bucket,sizeof(code_bucket),bucket_expr,"c.timestamp");
+    }
+
+    char sql[8192];
+    int written=snprintf(sql,sizeof(sql),
+        "WITH RECURSIVE calendar(bucket,n) AS (SELECT %s,0 UNION ALL SELECT date(bucket,'%s'),n+1 FROM calendar WHERE n+1<?1),"
+        "session_stats AS (SELECT %s bucket,COUNT(*) sessions FROM sessions s WHERE s.started_at<>'' GROUP BY bucket),"
+        "usage_stats AS (SELECT %s bucket,COUNT(*) model_calls,COALESCE(SUM(u.input_tokens),0) input_tokens,"
+        "COALESCE(SUM(u.cached_input_tokens),0) cached_input_tokens,COALESCE(SUM(u.cache_write_input_tokens),0) cache_write_input_tokens,"
+        "COALESCE(SUM(u.output_tokens),0) output_tokens,COALESCE(SUM(CASE WHEN p.model IS NOT NULL THEN 1 ELSE 0 END),0) priced_calls,"
+        "COALESCE(SUM(CASE WHEN p.model IS NOT NULL THEN ("
+        "MAX(u.input_tokens-u.cached_input_tokens-u.cache_write_input_tokens,0)*p.input_rate+"
+        "u.cached_input_tokens*p.cache_read_rate+u.cache_write_input_tokens*p.cache_write_rate+u.output_tokens*p.output_rate)/1000000.0 ELSE 0 END),0) cost "
+        "FROM model_usage_events u JOIN sessions s ON s.session_id=u.session_id LEFT JOIN model_pricing p ON p.source=s.source AND p.model=u.model "
+        "WHERE u.timestamp<>'' AND u.model<>'<synthetic>' GROUP BY bucket),"
+        "tool_stats AS (SELECT %s bucket,COUNT(*) tool_calls,COALESCE(SUM(t.is_mcp),0) mcp_calls FROM tool_calls t WHERE t.timestamp<>'' GROUP BY bucket),"
+        "code_stats AS (SELECT %s bucket,COUNT(DISTINCT c.source_path||':'||c.line_number) code_changes,"
+        "COALESCE(SUM(c.lines_added),0) lines_added,COALESCE(SUM(c.lines_deleted),0) lines_deleted FROM code_changes c WHERE c.timestamp<>'' GROUP BY bucket) "
+        "SELECT b.bucket,COALESCE(s.sessions,0),COALESCE(u.model_calls,0),COALESCE(u.input_tokens,0),COALESCE(u.cached_input_tokens,0),"
+        "COALESCE(u.cache_write_input_tokens,0),COALESCE(u.output_tokens,0),COALESCE(t.tool_calls,0),COALESCE(t.mcp_calls,0),"
+        "COALESCE(c.code_changes,0),COALESCE(c.lines_added,0),COALESCE(c.lines_deleted,0),COALESCE(u.priced_calls,0),COALESCE(u.cost,0) "
+        "FROM calendar b LEFT JOIN session_stats s USING(bucket) LEFT JOIN usage_stats u USING(bucket) LEFT JOIN tool_stats t USING(bucket) LEFT JOIN code_stats c USING(bucket) "
+        "ORDER BY b.bucket DESC",
+        calendar_start,calendar_step,session_bucket,usage_bucket,tool_bucket,code_bucket);
+    if(written<0||(size_t)written>=sizeof(sql))return -1;
+
+    sqlite3 *db=NULL;sqlite3_stmt *stmt=NULL;if(!open_database(&db))return -1;
+    if(sqlite3_prepare_v2(db,sql,-1,&stmt,NULL)!=SQLITE_OK){fprintf(stderr,"Period stats SQL error: %s\n",sqlite3_errmsg(db));sqlite3_close(db);return -1;}
+    sqlite3_bind_int(stmt,1,max_rows);int count=0;
+    while(count<max_rows&&sqlite3_step(stmt)==SQLITE_ROW){
+        AgentPeriodStats *row=&stats[count++];memset(row,0,sizeof(*row));
+        snprintf(row->period_start,sizeof(row->period_start),"%s",sqlite3_column_text(stmt,0));
+        row->sessions=(long)sqlite3_column_int64(stmt,1);row->model_calls=(long)sqlite3_column_int64(stmt,2);
+        row->input_tokens=(long)sqlite3_column_int64(stmt,3);row->cached_input_tokens=(long)sqlite3_column_int64(stmt,4);
+        row->cache_write_input_tokens=(long)sqlite3_column_int64(stmt,5);row->output_tokens=(long)sqlite3_column_int64(stmt,6);
+        row->tool_calls=(long)sqlite3_column_int64(stmt,7);row->mcp_calls=(long)sqlite3_column_int64(stmt,8);
+        row->code_changes=(long)sqlite3_column_int64(stmt,9);row->lines_added=(long)sqlite3_column_int64(stmt,10);
+        row->lines_deleted=(long)sqlite3_column_int64(stmt,11);row->priced_model_calls=(long)sqlite3_column_int64(stmt,12);
+        row->estimated_cost_usd=sqlite3_column_double(stmt,13);
+    }
+    sqlite3_finalize(stmt);sqlite3_close(db);return count;
+}
+
 /**
  * @brief 加载代码修改的总体统计数据
  * 

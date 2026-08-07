@@ -39,6 +39,7 @@ int load_tool_stats(AgentToolStats stats[], int max_tools);
 int load_project_stats(AgentProjectStats stats[], int max_projects);
 int load_mcp_stats(AgentCapabilityStats stats[], int max_rows);
 int load_skill_stats(AgentCapabilityStats stats[], int max_rows);
+int load_period_stats(AgentPeriodStats stats[], int max_rows, const char *period);
 
 bool set_model_pricing(const char *source, const char *model, double input_rate,
                        double cache_read_rate, double cache_write_rate, double output_rate);

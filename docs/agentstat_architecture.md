@@ -364,6 +364,7 @@ Agent 与 Git 两侧对新增非空行执行 SHA-256，归因匹配要求：
 | `/api/git` | Git 提交统计 |
 | `/api/attribution` | 精确行采纳率 |
 | `/api/sessions` | 最近会话 |
+| `/api/timeseries?period=day\|week\|month` | 本机时区的日、周、月使用趋势 |
 
 ### 12.3 Web
 
@@ -456,4 +457,3 @@ sqlite3 ~/.agentstat/agentstat.db "PRAGMA integrity_check; PRAGMA foreign_key_ch
 ```
 
 `integrity_check` 正常应返回 `ok`，`foreign_key_check` 正常应无输出。
-

@@ -161,6 +161,29 @@ static void handle_api_capabilities(int client_fd,bool skills){
     for(int i=0;i<count;i++){char name[520],detail[520],source[80],item[1200];json_escape(rows[i].name,name,sizeof(name));json_escape(rows[i].detail,detail,sizeof(detail));json_escape(rows[i].source,source,sizeof(source));snprintf(item,sizeof(item),"%s{\"name\":\"%s\",\"detail\":\"%s\",\"source\":\"%s\",\"calls\":%ld}",i?",":"",name,detail,source,rows[i].calls);strcat(json,item);}strcat(json,"]");send_response(client_fd,"200 OK","application/json",json);free(json);
 }
 
+static void handle_api_timeseries(int client_fd,const char *period){
+    int limit=strcmp(period,"day")==0?30:12;AgentPeriodStats rows[30];
+    int count=load_period_stats(rows,limit,period);
+    if(count<0){send_response(client_fd,"400 Bad Request","application/json","{\"error\":\"invalid period or failed to load time series\"}");return;}
+    char *json=malloc((size_t)(count>0?count:1)*700+128);
+    if(!json){send_response(client_fd,"500 Internal Error","application/json","{\"error\":\"out of memory\"}");return;}
+    int written=snprintf(json,(size_t)(count>0?count:1)*700+128,"{\"period\":\"%s\",\"timezone\":\"local\",\"rows\":[",period);
+    size_t capacity=(size_t)(count>0?count:1)*700+128;
+    for(int i=0;i<count&&written>0&&(size_t)written<capacity;i++){
+        written+=snprintf(json+written,capacity-(size_t)written,
+            "%s{\"period_start\":\"%s\",\"sessions\":%ld,\"model_calls\":%ld,\"input_tokens\":%ld,"
+            "\"cached_input_tokens\":%ld,\"cache_write_input_tokens\":%ld,\"output_tokens\":%ld,"
+            "\"tool_calls\":%ld,\"mcp_calls\":%ld,\"code_changes\":%ld,\"lines_added\":%ld,"
+            "\"lines_deleted\":%ld,\"priced_model_calls\":%ld,\"estimated_cost_usd\":%.8f}",
+            i?",":"",rows[i].period_start,rows[i].sessions,rows[i].model_calls,rows[i].input_tokens,
+            rows[i].cached_input_tokens,rows[i].cache_write_input_tokens,rows[i].output_tokens,
+            rows[i].tool_calls,rows[i].mcp_calls,rows[i].code_changes,rows[i].lines_added,
+            rows[i].lines_deleted,rows[i].priced_model_calls,rows[i].estimated_cost_usd);
+    }
+    if(written>0&&(size_t)written<capacity-3)snprintf(json+written,capacity-(size_t)written,"]}");
+    send_response(client_fd,"200 OK","application/json",json);free(json);
+}
+
 // 处理用法统计接口请求，组装整体资源使用情况和按来源细分的统计数据，并作为JSON返回
 static void handle_api_usage(int client_fd) {
     AgentUsageStats stats;
@@ -356,6 +379,9 @@ int start_web_server(int port) {
             handle_api_capabilities(client_fd,false);
         } else if (strstr(buffer, "GET /api/skills") != NULL) {
             handle_api_capabilities(client_fd,true);
+        } else if (strstr(buffer, "GET /api/timeseries") != NULL) {
+            const char *period=strstr(buffer,"period=week")?"week":strstr(buffer,"period=month")?"month":strstr(buffer,"period=day")?"day":"invalid";
+            handle_api_timeseries(client_fd,period);
         } else if (strstr(buffer, "GET /api/sessions") != NULL) {
             handle_api_records(client_fd);
         } else if (strstr(buffer, "GET /api/records") != NULL) {

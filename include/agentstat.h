@@ -123,6 +123,23 @@ typedef struct {
     long calls;
 } AgentCapabilityStats;
 
+typedef struct {
+    char period_start[16];
+    long sessions;
+    long model_calls;
+    long input_tokens;
+    long cached_input_tokens;
+    long cache_write_input_tokens;
+    long output_tokens;
+    long tool_calls;
+    long mcp_calls;
+    long code_changes;
+    long lines_added;
+    long lines_deleted;
+    long priced_model_calls;
+    double estimated_cost_usd;
+} AgentPeriodStats;
+
 // 代码变更相关的统计数据结构体
 typedef struct {
     long change_events;             // 变更事件总数

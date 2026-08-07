@@ -294,6 +294,17 @@
     .code-stat strong { display: block; font-size: 24px; font-weight: 600; color: #fff; font-variant-numeric: tabular-nums; }
     
     .session-path { max-width: 250px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+
+    .period-switch { display: inline-flex; align-items: center; padding: 3px; gap: 2px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 8px; }
+    .period-switch button { min-width: 56px; height: 30px; padding: 0 12px; color: var(--muted); background: transparent; border-radius: 6px; font-size: 12px; }
+    .period-switch button:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+    .period-switch button.active { color: #fff; background: var(--primary); }
+    .trend-chart { display: flex; flex-direction: column; gap: 12px; min-height: 360px; }
+    .trend-row { display: grid; grid-template-columns: 110px minmax(160px,1fr) 120px; gap: 16px; align-items: center; min-height: 20px; }
+    .trend-label { color: var(--muted); font-size: 12px; }
+    .trend-track { height: 10px; overflow: hidden; background: rgba(255,255,255,0.05); border-radius: 5px; }
+    .trend-fill { height: 100%; min-width: 2px; background: linear-gradient(90deg,var(--primary),var(--green)); border-radius: 5px; }
+    .trend-value { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text); }
     
     /* Scrollbar */
     ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -312,7 +323,7 @@
       <div class="mark">AS</div>
       <div class="brand-text">
         <h1>AgentStat</h1>
-        <p>Analytics Dashboard</p>
+        <p>AI Agent 使用分析</p>
       </div>
     </div>
     <nav id="nav-menu">
@@ -323,6 +334,10 @@
       <a href="#models" data-target="view-models" data-title="模型与来源">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
         模型与来源
+      </a>
+      <a href="#trends" data-target="view-trends" data-title="使用趋势">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 17 9 11 13 15 21 7"></polyline><polyline points="14 7 21 7 21 14"></polyline></svg>
+        使用趋势
       </a>
       <a href="#sessions" data-target="view-sessions" data-title="近期会话">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
@@ -343,7 +358,7 @@
           <span id="status"><strong>正在读取数据...</strong></span>
           <span id="updated">--</span>
         </div>
-        <button id="refresh" class="refresh" type="button">Refresh Data</button>
+        <button id="refresh" class="refresh" type="button">刷新数据</button>
       </div>
     </header>
     
@@ -360,14 +375,48 @@
         </section>
       </div>
 
-      <!-- View 2: Models & Sources -->
+      <!-- View 2: Time Trends -->
+      <div id="view-trends" class="view">
+        <section class="metrics">
+          <div class="metric"><div class="label">今日新会话</div><div class="value" id="today-sessions">--</div><div class="note">按会话开始时间</div></div>
+          <div class="metric"><div class="label">今日模型调用</div><div class="value" id="today-calls">--</div><div class="note" id="today-cache">--</div></div>
+          <div class="metric"><div class="label">今日 Token</div><div class="value" id="today-tokens">--</div><div class="note" id="today-token-detail">--</div></div>
+          <div class="metric"><div class="label">今日工具调用</div><div class="value" id="today-tools">--</div><div class="note" id="today-mcp">--</div></div>
+          <div class="metric"><div class="label">今日代码变更</div><div class="value" id="today-code">--</div><div class="note" id="today-lines">--</div></div>
+          <div class="metric"><div class="label">今日估算费用</div><div class="value" id="today-cost">--</div><div class="note" id="today-cost-detail">--</div></div>
+        </section>
+        <section class="grid-full">
+          <div class="panel">
+            <div class="panel-head">
+              <div><h2>Token 使用趋势</h2><span id="trend-scope">最近 30 个自然日，本机时区</span></div>
+              <div class="period-switch" id="period-switch">
+                <button type="button" class="active" data-period="day">日</button>
+                <button type="button" data-period="week">周</button>
+                <button type="button" data-period="month">月</button>
+              </div>
+            </div>
+            <div class="panel-body"><div class="trend-chart" id="trend-chart"></div></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>周期明细</h2><span>各事件按自身发生时间归入周期</span></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>周期</th><th class="num">会话</th><th class="num">模型调用</th><th class="num">输入 Token</th><th class="num">缓存读取</th><th class="num">输出 Token</th><th class="num">工具</th><th class="num">MCP</th><th class="num">代码变更</th><th class="num">费用</th></tr></thead>
+                <tbody id="trend-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- View 3: Models & Sources -->
       <div id="view-models" class="view">
         <section class="grid-full">
           <div class="panel">
             <div class="panel-head"><h2>真实模型用量</h2><span>模型名直接来自 Agent 原始日志</span></div>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Agent</th><th>模型</th><th class="num">模型调用</th><th class="num">模型选择</th><th class="num">输入 Token</th><th class="num">缓存读取</th><th class="num">输出 Token</th></tr></thead>
+                <thead><tr><th>Agent</th><th>模型</th><th class="num">模型调用</th><th class="num">模型选择</th><th class="num">输入 Token</th><th class="num">缓存读取</th><th class="num">缓存写入</th><th class="num">输出 Token</th><th class="num">估算费用</th></tr></thead>
                 <tbody id="model-body"></tbody>
               </table>
             </div>
@@ -460,6 +509,8 @@
   const safe = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const badge = source => `<span class="source ${safe(source).toLowerCase()}">${safe(source)}</span>`;
   const empty = (cols, text='暂无数据') => `<tr><td class="empty" colspan="${cols}">${text}</td></tr>`;
+  const timeSeries = {day: [], week: [], month: []};
+  let activePeriod = 'day';
 
   async function request(path) {
     const response = await fetch(path, {cache:'no-store'});
@@ -470,14 +521,18 @@
   async function load() {
     const button = document.getElementById('refresh');
     button.disabled = true;
-    button.textContent = 'Refreshing...';
+    button.textContent = '刷新中...';
     document.getElementById('status').innerHTML = '<strong>正在读取数据...</strong>';
     try {
-      const [usage, code, git, attribution, models, tools, sessions, mcp, skills] = await Promise.all([
+      const [usage, code, git, attribution, models, tools, sessions, mcp, skills, daily, weekly, monthly] = await Promise.all([
         request('/api/usage'), request('/api/code'), request('/api/git'), request('/api/attribution'),
         request('/api/models'), request('/api/tools'), request('/api/sessions'),
-        request('/api/mcp'), request('/api/skills')
+        request('/api/mcp'), request('/api/skills'),
+        request('/api/timeseries?period=day'), request('/api/timeseries?period=week'), request('/api/timeseries?period=month')
       ]);
+      timeSeries.day = daily.rows || [];
+      timeSeries.week = weekly.rows || [];
+      timeSeries.month = monthly.rows || [];
       renderMetrics(usage, code, git, attribution);
       renderSources(usage.sources || []);
       renderModels(models || []);
@@ -486,13 +541,15 @@
       renderMcp(mcp || []);
       renderSkills(skills || []);
       renderCode(code);
+      renderToday(timeSeries.day[0] || {});
+      renderTimeSeries(activePeriod);
       document.getElementById('status').innerHTML = '<strong>数据已更新</strong>';
       document.getElementById('updated').textContent = `最后更新 ${new Date().toLocaleTimeString('zh-CN')}`;
     } catch (error) {
       document.getElementById('status').innerHTML = `<strong class="error">加载失败：${safe(error.message)}</strong>`;
     } finally { 
       button.disabled = false;
-      button.textContent = 'Refresh Data';
+      button.textContent = '刷新数据';
     }
   }
 
@@ -516,7 +573,44 @@
   }
 
   function renderModels(rows) {
-    document.getElementById('model-body').innerHTML = rows.length ? rows.map(r => `<tr><td>${badge(r.source)}</td><td class="model">${safe(r.model)}</td><td class="num">${fmt(r.model_calls)}</td><td class="num">${fmt(r.selections)}</td><td class="num">${fmt(r.input_tokens)}</td><td class="num">${fmt(r.cached_input_tokens)}</td><td class="num">${fmt(r.output_tokens)}</td></tr>`).join('') : empty(7, '尚未采集到模型字段');
+    document.getElementById('model-body').innerHTML = rows.length ? rows.map(r => `<tr><td>${badge(r.source)}</td><td class="model">${safe(r.model)}</td><td class="num">${fmt(r.model_calls)}</td><td class="num">${fmt(r.selections)}</td><td class="num">${fmt(r.input_tokens)}</td><td class="num">${fmt(r.cached_input_tokens)}</td><td class="num">${fmt(r.cache_write_input_tokens)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${r.pricing_configured ? `$${Number(r.estimated_cost_usd || 0).toFixed(4)}` : '未配置'}</td></tr>`).join('') : empty(9, '尚未采集到模型字段');
+  }
+
+  function renderToday(row) {
+    const input = Number(row.input_tokens || 0), output = Number(row.output_tokens || 0), cached = Number(row.cached_input_tokens || 0);
+    document.getElementById('today-sessions').textContent = fmt(row.sessions);
+    document.getElementById('today-calls').textContent = fmt(row.model_calls);
+    document.getElementById('today-cache').textContent = input ? `缓存命中 ${((cached / input) * 100).toFixed(1)}%` : '今日暂无 Token';
+    document.getElementById('today-tokens').textContent = fmt(input + output);
+    document.getElementById('today-token-detail').textContent = `输入 ${fmt(input)} · 输出 ${fmt(output)}`;
+    document.getElementById('today-tools').textContent = fmt(row.tool_calls);
+    document.getElementById('today-mcp').textContent = `其中 MCP ${fmt(row.mcp_calls)} 次`;
+    document.getElementById('today-code').textContent = fmt(row.code_changes);
+    document.getElementById('today-lines').textContent = `新增 ${fmt(row.lines_added)} · 删除 ${fmt(row.lines_deleted)}`;
+    document.getElementById('today-cost').textContent = Number(row.priced_model_calls || 0) ? `$${Number(row.estimated_cost_usd || 0).toFixed(4)}` : '未配置';
+    document.getElementById('today-cost-detail').textContent = `价格覆盖 ${fmt(row.priced_model_calls)} / ${fmt(row.model_calls)} 次调用`;
+  }
+
+  function periodLabel(value, period) {
+    const [year, month, day] = String(value || '').split('-');
+    if (period === 'month') return `${year}年${Number(month)}月`;
+    if (period === 'week') return `${Number(month)}月${Number(day)}日当周`;
+    return `${Number(month)}月${Number(day)}日`;
+  }
+
+  function renderTimeSeries(period) {
+    activePeriod = period;
+    const rows = timeSeries[period] || [];
+    const scopes = {day:'最近 30 个自然日，本机时区', week:'最近 12 个自然周，周一开始', month:'最近 12 个自然月'};
+    document.getElementById('trend-scope').textContent = scopes[period];
+    document.querySelectorAll('#period-switch button').forEach(button => button.classList.toggle('active', button.dataset.period === period));
+    const chartRows = rows.slice(0, 12).reverse();
+    const max = Math.max(...chartRows.map(r => Number(r.input_tokens || 0) + Number(r.output_tokens || 0)), 1);
+    document.getElementById('trend-chart').innerHTML = chartRows.length ? chartRows.map(r => {
+      const tokens = Number(r.input_tokens || 0) + Number(r.output_tokens || 0);
+      return `<div class="trend-row"><div class="trend-label">${safe(periodLabel(r.period_start, period))}</div><div class="trend-track"><div class="trend-fill" style="width:${tokens ? Math.max(1, tokens / max * 100) : 0}%"></div></div><div class="trend-value">${fmt(tokens)} Token</div></div>`;
+    }).join('') : '<div class="empty">暂无周期数据</div>';
+    document.getElementById('trend-body').innerHTML = rows.length ? rows.map(r => `<tr><td>${safe(periodLabel(r.period_start, period))}</td><td class="num">${fmt(r.sessions)}</td><td class="num">${fmt(r.model_calls)}</td><td class="num">${fmt(r.input_tokens)}</td><td class="num">${fmt(r.cached_input_tokens)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.tool_calls)}</td><td class="num">${fmt(r.mcp_calls)}</td><td class="num">${fmt(r.code_changes)}</td><td class="num">${Number(r.priced_model_calls || 0) ? `$${Number(r.estimated_cost_usd || 0).toFixed(4)}` : '未配置'}</td></tr>`).join('') : empty(10, '暂无周期数据');
   }
 
   function renderSessions(rows) {
@@ -544,6 +638,7 @@
   }
 
   document.getElementById('refresh').addEventListener('click', load);
+  document.querySelectorAll('#period-switch button').forEach(button => button.addEventListener('click', () => renderTimeSeries(button.dataset.period)));
   load();
 </script>
 </body>
