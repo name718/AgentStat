@@ -61,7 +61,7 @@ static bool import_planner(sqlite3 *db,const char *json,const char *source_path,
     while(ok&&sqlite3_step(stmt)==SQLITE_ROW){
         int ordinal=sqlite3_column_int(stmt,0);const char *name=(const char*)sqlite3_column_text(stmt,1),*args=(const char*)sqlite3_column_text(stmt,2);
         long tool_event=-(line_number*10000L+ordinal*100L);bool inserted=false;
-        ok=adapter_insert_tool(db,source_path,tool_event,session_id,timestamp,name,"tool_call",strstr(name,"mcp__")==name,&inserted);if(inserted)result->tool_calls_imported++;
+        ok=adapter_insert_tool(db,source_path,tool_event,session_id,timestamp,name,"tool_call",strstr(name,"mcp__")==name,"",&inserted);if(inserted)result->tool_calls_imported++;
         if(!ok)break;
         char file[PATH_MAX]="",old_text[1]={0};
         char tool_id[128];snprintf(tool_id,sizeof(tool_id),"step-%ld-tool-%d",line_number,ordinal);

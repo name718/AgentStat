@@ -3,7 +3,7 @@
 
 #include "agentstat.h"
 
-// 根据使用的模型以及输入/输出的token数量，计算预估的花费（美元）
+// 旧版兼容入口；不再使用模糊模型匹配或默认价格
 double calculate_estimated_cost(const char *model, long input_tokens, long output_tokens);
 
 // 生成一个唯一的会话ID并将其写入到提供的缓冲区中

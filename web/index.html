@@ -319,10 +319,10 @@
       <div class="mark">AS</div>
       <div class="brand-text">
         <h1>AgentStat</h1>
-        <p>Advanced AI Analytics Dashboard</p>
+        <p>AI Agent 使用与代码采纳分析</p>
       </div>
     </div>
-    <button id="refresh" class="refresh" type="button">Refresh Data</button>
+    <button id="refresh" class="refresh" type="button">刷新数据</button>
   </header>
   
   <main>
@@ -338,6 +338,7 @@
       <div class="metric"><div class="label">Agent 代码变更</div><div class="value" id="changes">--</div><div class="note" id="line-detail">--</div></div>
       <div class="metric"><div class="label">精确采纳率</div><div class="value" id="acceptance">--</div><div class="note" id="acceptance-detail">--</div></div>
       <div class="metric"><div class="label">Git 提交</div><div class="value" id="commits">--</div><div class="note" id="repo-detail">--</div></div>
+      <div class="metric"><div class="label">估算费用</div><div class="value" id="cost">--</div><div class="note" id="cost-detail">--</div></div>
     </section>
 
     <section class="grid">
@@ -345,7 +346,7 @@
         <div class="panel-head"><h2>真实模型用量</h2><span>模型名直接来自 Agent 原始日志</span></div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Agent</th><th>模型</th><th class="num">模型调用</th><th class="num">模型选择</th><th class="num">输入 Token</th><th class="num">缓存读取</th><th class="num">输出 Token</th></tr></thead>
+            <thead><tr><th>Agent</th><th>模型</th><th class="num">模型调用</th><th class="num">模型选择</th><th class="num">输入 Token</th><th class="num">缓存读取</th><th class="num">缓存写入</th><th class="num">输出 Token</th><th class="num">估算费用</th></tr></thead>
             <tbody id="model-body"></tbody>
           </table>
         </div>
@@ -358,6 +359,27 @@
             <tbody id="source-body"></tbody>
           </table>
         </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-bottom:24px">
+      <div class="panel-head"><h2>项目统计</h2><span>优先依据会话工作目录识别项目</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>项目</th><th>路径</th><th class="num">会话</th><th class="num">Agent 数</th><th class="num">输入 Token</th><th class="num">输出 Token</th><th class="num">工具</th><th class="num">代码变更</th></tr></thead>
+          <tbody id="project-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <div class="panel-head"><h2>MCP 调用</h2><span>仅统计日志中明确标记的 MCP 调用</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Server</th><th>工具</th><th>来源</th><th class="num">调用次数</th></tr></thead><tbody id="mcp-body"></tbody></table></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Skill 调用</h2><span>Skill 名称来自原始调用参数</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Skill</th><th>来源</th><th class="num">调用次数</th></tr></thead><tbody id="skill-body"></tbody></table></div>
       </div>
     </section>
 
@@ -405,30 +427,34 @@
   async function load() {
     const button = document.getElementById('refresh');
     button.disabled = true;
-    button.textContent = 'Refreshing...';
+    button.textContent = '刷新中...';
     document.getElementById('status').innerHTML = '<strong>正在读取本地数据...</strong>';
     try {
-      const [usage, code, git, attribution, models, tools, sessions] = await Promise.all([
+      const [summary, usage, code, git, attribution, models, tools, sessions, projects, mcp, skills] = await Promise.all([
+        request('/api/summary'),
         request('/api/usage'), request('/api/code'), request('/api/git'), request('/api/attribution'),
-        request('/api/models'), request('/api/tools'), request('/api/sessions')
+        request('/api/models'), request('/api/tools'), request('/api/sessions'), request('/api/projects'),
+        request('/api/mcp'), request('/api/skills')
       ]);
-      renderMetrics(usage, code, git, attribution);
+      renderMetrics(summary, usage, code, git, attribution);
       renderSources(usage.sources || []);
       renderModels(models || []);
       renderSessions(sessions || []);
       renderTools(tools || []);
       renderCode(code);
+      renderProjects(projects || []);
+      renderCapabilities(mcp || [], skills || []);
       document.getElementById('status').innerHTML = '<strong>数据加载完毕</strong>';
       document.getElementById('updated').textContent = `最后更新 ${new Date().toLocaleString('zh-CN')}`;
     } catch (error) {
       document.getElementById('status').innerHTML = `<strong class="error">加载失败：${safe(error.message)}</strong>`;
     } finally { 
       button.disabled = false;
-      button.textContent = 'Refresh Data';
+      button.textContent = '刷新数据';
     }
   }
 
-  function renderMetrics(u, c, g, a) {
+  function renderMetrics(summary, u, c, g, a) {
     document.getElementById('sessions').textContent = fmt(u.total_sessions);
     document.getElementById('source-count').textContent = `${(u.sources || []).length} 个数据来源`;
     document.getElementById('tokens').textContent = fmt(Number(u.input_tokens || 0) + Number(u.output_tokens || 0));
@@ -441,6 +467,9 @@
     document.getElementById('acceptance-detail').textContent = `${fmt(a.accepted_lines)} / ${fmt(a.candidate_lines)} 精确匹配行`;
     document.getElementById('commits').textContent = fmt(g.commits);
     document.getElementById('repo-detail').textContent = `${fmt(g.repositories)} 个仓库 · ${fmt(g.files_changed)} 个文件`;
+    const priced = Number(summary.priced_model_calls || 0), total = Number(summary.total_model_calls || 0);
+    document.getElementById('cost').textContent = priced ? `$${Number(summary.estimated_cost_usd || 0).toFixed(4)}` : '未配置';
+    document.getElementById('cost-detail').textContent = `价格覆盖 ${fmt(priced)} / ${fmt(total)} 次模型调用`;
   }
 
   function renderSources(rows) {
@@ -448,7 +477,16 @@
   }
 
   function renderModels(rows) {
-    document.getElementById('model-body').innerHTML = rows.length ? rows.map(r => `<tr><td>${badge(r.source)}</td><td class="model">${safe(r.model)}</td><td class="num">${fmt(r.model_calls)}</td><td class="num">${fmt(r.selections)}</td><td class="num">${fmt(r.input_tokens)}</td><td class="num">${fmt(r.cached_input_tokens)}</td><td class="num">${fmt(r.output_tokens)}</td></tr>`).join('') : empty(7, '尚未采集到模型字段');
+    document.getElementById('model-body').innerHTML = rows.length ? rows.map(r => `<tr><td>${badge(r.source)}</td><td class="model">${safe(r.model)}</td><td class="num">${fmt(r.model_calls)}</td><td class="num">${fmt(r.selections)}</td><td class="num">${fmt(r.input_tokens)}</td><td class="num">${fmt(r.cached_input_tokens)}</td><td class="num">${fmt(r.cache_write_input_tokens)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num" title="${r.pricing_configured ? `输入 ${r.input_rate} / 缓存读 ${r.cache_read_rate} / 缓存写 ${r.cache_write_rate} / 输出 ${r.output_rate} USD/百万 Token` : '该 Agent 与模型组合尚未配置价格'}">${r.pricing_configured ? `$${Number(r.estimated_cost_usd || 0).toFixed(4)}` : '未配置'}</td></tr>`).join('') : empty(9, '尚未采集到模型字段');
+  }
+
+  function renderProjects(rows) {
+    document.getElementById('project-body').innerHTML = rows.length ? rows.map(r => `<tr><td class="model">${safe(r.project)}</td><td class="session-path" title="${safe(r.project_path)}">${safe(r.project_path)}</td><td class="num">${fmt(r.sessions)}</td><td class="num">${fmt(r.sources)}</td><td class="num">${fmt(r.input_tokens)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.tool_calls)}</td><td class="num">${fmt(r.code_changes)}</td></tr>`).join('') : empty(8, '尚未识别到项目数据');
+  }
+
+  function renderCapabilities(mcp, skills) {
+    document.getElementById('mcp-body').innerHTML = mcp.length ? mcp.map(r => `<tr><td>${safe(r.name)}</td><td class="model">${safe(r.detail)}</td><td>${badge(r.source)}</td><td class="num">${fmt(r.calls)}</td></tr>`).join('') : empty(4, '尚未采集到 MCP 调用');
+    document.getElementById('skill-body').innerHTML = skills.length ? skills.map(r => `<tr><td class="model">${safe(r.name)}</td><td>${badge(r.source)}</td><td class="num">${fmt(r.calls)}</td></tr>`).join('') : empty(3, '尚未采集到 Skill 调用；旧数据需重新同步 Claude');
   }
 
   function renderSessions(rows) {

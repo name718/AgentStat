@@ -121,14 +121,16 @@ bool adapter_upsert_session(sqlite3 *db, const char *session_id, const char *sou
 // 记录工具调用 (tool call) 事件至数据库，包含调用类型与是否为 MCP 工具
 bool adapter_insert_tool(sqlite3 *db, const char *source_path, long event_number,
                          const char *session_id, const char *timestamp, const char *name,
-                         const char *call_type, bool is_mcp, bool *inserted) {
+                         const char *call_type, bool is_mcp, const char *detail_name,
+                         bool *inserted) {
     sqlite3_stmt *stmt = NULL;
-    bool ok = sqlite3_prepare_v2(db,"INSERT OR IGNORE INTO tool_calls(source_path,line_number,session_id,timestamp,tool_name,call_type,is_mcp) VALUES(?1,?2,?3,?4,?5,?6,?7)",-1,&stmt,NULL)==SQLITE_OK;
+    bool ok = sqlite3_prepare_v2(db,"INSERT INTO tool_calls(source_path,line_number,session_id,timestamp,tool_name,call_type,is_mcp,detail_name) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(source_path,line_number) DO UPDATE SET detail_name=excluded.detail_name WHERE tool_calls.detail_name='' AND excluded.detail_name<>''",-1,&stmt,NULL)==SQLITE_OK;
     if (ok) {
         sqlite3_bind_text(stmt,1,source_path,-1,SQLITE_TRANSIENT); sqlite3_bind_int64(stmt,2,event_number);
         sqlite3_bind_text(stmt,3,session_id,-1,SQLITE_TRANSIENT); sqlite3_bind_text(stmt,4,timestamp,-1,SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt,5,name,-1,SQLITE_TRANSIENT); sqlite3_bind_text(stmt,6,call_type,-1,SQLITE_STATIC);
-        sqlite3_bind_int(stmt,7,is_mcp); ok=sqlite3_step(stmt)==SQLITE_DONE;
+        sqlite3_bind_int(stmt,7,is_mcp); sqlite3_bind_text(stmt,8,detail_name?detail_name:"",-1,SQLITE_TRANSIENT);
+        ok=sqlite3_step(stmt)==SQLITE_DONE;
     }
     if (inserted) *inserted=ok && sqlite3_changes(db)>0;
     sqlite3_finalize(stmt);

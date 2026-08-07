@@ -36,6 +36,14 @@ int load_recent_session_stats(AgentSessionStats stats[], int max_sessions);
 // 加载工具使用的统计数据，返回加载的工具数量
 int load_tool_stats(AgentToolStats stats[], int max_tools);
 
+int load_project_stats(AgentProjectStats stats[], int max_projects);
+int load_mcp_stats(AgentCapabilityStats stats[], int max_rows);
+int load_skill_stats(AgentCapabilityStats stats[], int max_rows);
+
+bool set_model_pricing(const char *source, const char *model, double input_rate,
+                       double cache_read_rate, double cache_write_rate, double output_rate);
+int load_model_pricing(AgentModelStats stats[], int max_models);
+
 // 加载代码变更的统计数据
 bool load_code_stats(AgentCodeStats *stats);
 

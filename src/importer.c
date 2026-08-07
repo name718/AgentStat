@@ -341,8 +341,8 @@ bool import_codex_jsonl(const char *path, CodexImportResult *result) {
             int is_mcp = strcmp(payload_type,"mcp_tool_call") == 0 || strstr(name,"mcp__") == name;
             sqlite3_stmt *stmt = NULL;
             ok = sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO tool_calls "
-                "(source_path,line_number,session_id,timestamp,tool_name,call_type,is_mcp) "
-                "VALUES(?1,?2,?3,?4,?5,?6,?7)", -1, &stmt, NULL) == SQLITE_OK;
+                "(source_path,line_number,session_id,timestamp,tool_name,call_type,is_mcp,detail_name) "
+                "VALUES(?1,?2,?3,?4,?5,?6,?7,'')", -1, &stmt, NULL) == SQLITE_OK;
             if (ok) {
                 sqlite3_bind_text(stmt,1,source_path,-1,SQLITE_TRANSIENT); sqlite3_bind_int64(stmt,2,line_number);
                 sqlite3_bind_text(stmt,3,session_id,-1,SQLITE_TRANSIENT); sqlite3_bind_text(stmt,4,timestamp,-1,SQLITE_TRANSIENT);

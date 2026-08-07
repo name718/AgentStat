@@ -93,6 +93,20 @@ static bool execute_sql(sqlite3 *db, const char *sql) {
     return true;
 }
 
+static bool table_has_column(sqlite3 *db, const char *table, const char *column) {
+    char sql[256];
+    sqlite3_stmt *stmt = NULL;
+    snprintf(sql, sizeof(sql), "PRAGMA table_info(%s)", table);
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return false;
+    bool found = false;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *name = (const char *)sqlite3_column_text(stmt, 1);
+        if (name && strcmp(name, column) == 0) { found = true; break; }
+    }
+    sqlite3_finalize(stmt);
+    return found;
+}
+
 /**
  * @brief 将 AgentRecord 结构体的数据绑定到 SQL 插入语句的参数中
  * 
@@ -245,6 +259,7 @@ static bool open_database(sqlite3 **db) {
         "CREATE TABLE IF NOT EXISTS tool_calls ("
         "source_path TEXT NOT NULL, line_number INTEGER NOT NULL, session_id TEXT NOT NULL,"
         "timestamp TEXT, tool_name TEXT NOT NULL, call_type TEXT NOT NULL, is_mcp INTEGER NOT NULL DEFAULT 0,"
+        "detail_name TEXT NOT NULL DEFAULT '',"
         "PRIMARY KEY(source_path,line_number), FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE"
         ");"
         "CREATE INDEX IF NOT EXISTS idx_tool_session ON tool_calls(session_id);"
@@ -255,6 +270,12 @@ static bool open_database(sqlite3 **db) {
         "FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE"
         ");"
         "CREATE INDEX IF NOT EXISTS idx_model_selection_session ON model_selection_events(session_id);";
+    const char *pricing_schema =
+        "CREATE TABLE IF NOT EXISTS model_pricing ("
+        "source TEXT NOT NULL,model TEXT NOT NULL,input_rate REAL NOT NULL,"
+        "cache_read_rate REAL NOT NULL,cache_write_rate REAL NOT NULL,output_rate REAL NOT NULL,"
+        "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(source,model)"
+        ");";
     const char *code_schema =
         "CREATE TABLE IF NOT EXISTS code_changes ("
         "source_path TEXT NOT NULL, line_number INTEGER NOT NULL, session_id TEXT NOT NULL,"
@@ -301,8 +322,14 @@ static bool open_database(sqlite3 **db) {
         "CREATE INDEX IF NOT EXISTS idx_git_fingerprint ON git_line_fingerprints(repo_path,file_path,fingerprint);";
     if (!execute_sql(*db, schema) || !execute_sql(*db, event_schema) ||
         !execute_sql(*db, code_schema) || !execute_sql(*db, git_schema) ||
-        !execute_sql(*db, attribution_schema) ||
+        !execute_sql(*db, attribution_schema) || !execute_sql(*db, pricing_schema) ||
         !import_legacy_csv(*db)) {
+        sqlite3_close(*db);
+        *db = NULL;
+        return false;
+    }
+    if (!table_has_column(*db, "tool_calls", "detail_name") &&
+        !execute_sql(*db, "ALTER TABLE tool_calls ADD COLUMN detail_name TEXT NOT NULL DEFAULT ''")) {
         sqlite3_close(*db);
         *db = NULL;
         return false;
@@ -431,15 +458,21 @@ int load_model_stats(AgentModelStats stats[], int max_models) {
     const char *sql =
         "WITH raw AS ("
         " SELECT s.source,u.model,COUNT(*) model_calls,0 selections,"
-        " SUM(u.input_tokens) input_tokens,SUM(u.cached_input_tokens) cached_input_tokens,SUM(u.output_tokens) output_tokens"
+        " SUM(u.input_tokens) input_tokens,SUM(u.cached_input_tokens) cached_input_tokens,"
+        " SUM(u.cache_write_input_tokens) cache_write_input_tokens,SUM(u.output_tokens) output_tokens"
         " FROM model_usage_events u JOIN sessions s ON s.session_id=u.session_id"
         " WHERE u.model<>'' AND u.model<>'<synthetic>' GROUP BY s.source,u.model"
         " UNION ALL"
-        " SELECT s.source,m.model,0,COUNT(*),0,0,0 FROM model_selection_events m"
+        " SELECT s.source,m.model,0,COUNT(*),0,0,0,0 FROM model_selection_events m"
         " JOIN sessions s ON s.session_id=m.session_id WHERE m.model<>'' GROUP BY s.source,m.model"
-        ") SELECT source,model,SUM(model_calls),SUM(selections),SUM(input_tokens),"
-        "SUM(cached_input_tokens),SUM(output_tokens) FROM raw GROUP BY source,model"
-        " ORDER BY SUM(input_tokens)+SUM(output_tokens) DESC,SUM(selections) DESC,source,model";
+        "), totals AS (SELECT source,model,SUM(model_calls) model_calls,SUM(selections) selections,"
+        "SUM(input_tokens) input_tokens,SUM(cached_input_tokens) cached_input_tokens,"
+        "SUM(cache_write_input_tokens) cache_write_input_tokens,SUM(output_tokens) output_tokens "
+        "FROM raw GROUP BY source,model) "
+        "SELECT t.source,t.model,t.model_calls,t.selections,t.input_tokens,t.cached_input_tokens,"
+        "t.cache_write_input_tokens,t.output_tokens,p.input_rate,p.cache_read_rate,p.cache_write_rate,p.output_rate "
+        "FROM totals t LEFT JOIN model_pricing p ON p.source=t.source AND p.model=t.model"
+        " ORDER BY t.input_tokens+t.output_tokens DESC,t.selections DESC,t.source,t.model";
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) { sqlite3_close(db); return -1; }
     int count = 0;
     while (count < max_models && sqlite3_step(stmt) == SQLITE_ROW) {
@@ -451,7 +484,21 @@ int load_model_stats(AgentModelStats stats[], int max_models) {
         row->selections = (long)sqlite3_column_int64(stmt,3);
         row->input_tokens = (long)sqlite3_column_int64(stmt,4);
         row->cached_input_tokens = (long)sqlite3_column_int64(stmt,5);
-        row->output_tokens = (long)sqlite3_column_int64(stmt,6);
+        row->cache_write_input_tokens = (long)sqlite3_column_int64(stmt,6);
+        row->output_tokens = (long)sqlite3_column_int64(stmt,7);
+        row->pricing_configured = sqlite3_column_type(stmt,8) != SQLITE_NULL;
+        if (row->pricing_configured) {
+            row->input_rate=sqlite3_column_double(stmt,8);
+            row->cache_read_rate=sqlite3_column_double(stmt,9);
+            row->cache_write_rate=sqlite3_column_double(stmt,10);
+            row->output_rate=sqlite3_column_double(stmt,11);
+            long normal_input=row->input_tokens-row->cached_input_tokens-row->cache_write_input_tokens;
+            if(normal_input<0) normal_input=0;
+            row->estimated_cost_usd=((double)normal_input*row->input_rate+
+                (double)row->cached_input_tokens*row->cache_read_rate+
+                (double)row->cache_write_input_tokens*row->cache_write_rate+
+                (double)row->output_tokens*row->output_rate)/1000000.0;
+        }
     }
     sqlite3_finalize(stmt);
     sqlite3_close(db);
@@ -519,7 +566,7 @@ int load_tool_stats(AgentToolStats stats[], int max_tools) {
     sqlite3 *db = NULL;
     sqlite3_stmt *stmt = NULL;
     if (!open_database(&db)) return -1;
-    const char *sql = "SELECT tool_name,COUNT(*),SUM(is_mcp) FROM tool_calls GROUP BY tool_name ORDER BY COUNT(*) DESC LIMIT ?1";
+    const char *sql = "SELECT tool_name,COALESCE(detail_name,''),COUNT(*),SUM(is_mcp) FROM tool_calls GROUP BY tool_name,detail_name ORDER BY COUNT(*) DESC LIMIT ?1";
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) { sqlite3_close(db); return -1; }
     sqlite3_bind_int(stmt,1,max_tools);
     int count = 0;
@@ -527,12 +574,169 @@ int load_tool_stats(AgentToolStats stats[], int max_tools) {
         AgentToolStats *row=&stats[count++];
         memset(row,0,sizeof(*row));
         snprintf(row->tool_name,sizeof(row->tool_name),"%s",sqlite3_column_text(stmt,0));
-        row->calls=(long)sqlite3_column_int64(stmt,1);
-        row->mcp_calls=(long)sqlite3_column_int64(stmt,2);
+        snprintf(row->detail_name,sizeof(row->detail_name),"%s",sqlite3_column_text(stmt,1));
+        row->calls=(long)sqlite3_column_int64(stmt,2);
+        row->mcp_calls=(long)sqlite3_column_int64(stmt,3);
     }
     sqlite3_finalize(stmt);
     sqlite3_close(db);
     return count;
+}
+
+static bool path_is_dir(const char *path) {
+    struct stat info;
+    return path && path[0] && stat(path, &info) == 0 && S_ISDIR(info.st_mode);
+}
+
+static void path_parent(char *path) {
+    size_t len = strlen(path);
+    while (len > 1 && path[len - 1] == '/') path[--len] = '\0';
+    char *slash = strrchr(path, '/');
+    if (!slash) { snprintf(path, 2, "."); return; }
+    if (slash == path) path[1] = '\0'; else *slash = '\0';
+}
+
+static bool has_project_marker(const char *path) {
+    static const char *markers[] = {
+        ".git", "package.json", "Makefile", "go.mod", "Cargo.toml",
+        "pyproject.toml", "pom.xml", "build.gradle", "composer.json"
+    };
+    char candidate[1400];
+    struct stat info;
+    for (size_t i = 0; i < sizeof(markers) / sizeof(markers[0]); i++) {
+        snprintf(candidate, sizeof(candidate), "%s/%s", path, markers[i]);
+        if (stat(candidate, &info) == 0) return true;
+    }
+    return false;
+}
+
+static bool extract_workspace_root(const char *path, const char *anchor, char *out, size_t size);
+
+static void resolve_project_path(const char *cwd, const char *file_path, char *out, size_t size) {
+    bool unreliable_cwd = cwd && (strstr(cwd, "/.gemini/antigravity/brain/") ||
+                                  strstr(cwd, "/.gemini/antigravity-cli/brain/"));
+    const char *source = (!unreliable_cwd && cwd && cwd[0]) ? cwd : file_path;
+    bool from_file = source == file_path;
+    if (!source || !source[0] || strstr(source,"/.gemini/antigravity-cli/brain/")) { out[0] = '\0'; return; }
+    snprintf(out, size, "%s", source);
+    if (from_file || !path_is_dir(out)) path_parent(out);
+    char fallback[1024];
+    snprintf(fallback, sizeof(fallback), "%s", out);
+    while (out[0]) {
+        if (has_project_marker(out)) return;
+        if (strcmp(out, "/") == 0 || strcmp(out, ".") == 0) break;
+        path_parent(out);
+    }
+    if(from_file&&(extract_workspace_root(fallback,"/Desktop/workplace/",out,size)||
+        extract_workspace_root(fallback,"/Desktop/my-project/",out,size)||
+        extract_workspace_root(fallback,"/Downloads/",out,size))) return;
+    const char *home=getenv("HOME");
+    if(strcmp(fallback,"/")==0||(home&&strcmp(fallback,home)==0)){out[0]='\0';return;}
+    snprintf(out, size, "%s", fallback);
+}
+
+static const char *path_basename(const char *path) {
+    if (!path || !path[0]) return "未识别项目";
+    const char *slash = strrchr(path, '/');
+    return slash && slash[1] ? slash + 1 : path;
+}
+
+static bool extract_workspace_root(const char *path, const char *anchor, char *out, size_t size) {
+    const char *start=strstr(path,anchor);if(!start)return false;start+=strlen(anchor);const char *end=strchr(start,'/');
+    if(!*start)return false;size_t prefix=(size_t)(start-path),name_len=end?(size_t)(end-start):strlen(start);
+    if(prefix+name_len>=size)return false;snprintf(out,size,"%.*s",(int)(prefix+name_len),path);return true;
+}
+
+int load_project_stats(AgentProjectStats stats[], int max_projects) {
+    if (!stats || max_projects <= 0) return -1;
+    sqlite3 *db = NULL;
+    sqlite3_stmt *stmt = NULL;
+    if (!open_database(&db)) return -1;
+    const char *sql =
+        "SELECT s.source,COALESCE(s.cwd,''),COALESCE((SELECT c.file_path FROM code_changes c "
+        "WHERE c.session_id=s.session_id AND c.file_path<>'' ORDER BY CASE WHEN c.file_path LIKE '%/.gemini/antigravity-cli/brain/%' THEN 1 ELSE 0 END,c.rowid LIMIT 1),''),"
+        "COALESCE((SELECT SUM(input_tokens) FROM model_usage_events u WHERE u.session_id=s.session_id AND u.model<>'<synthetic>'),0),"
+        "COALESCE((SELECT SUM(output_tokens) FROM model_usage_events u WHERE u.session_id=s.session_id AND u.model<>'<synthetic>'),0),"
+        "(SELECT COUNT(*) FROM tool_calls t WHERE t.session_id=s.session_id),"
+        "(SELECT COUNT(DISTINCT c.source_path||':'||c.line_number) FROM code_changes c WHERE c.session_id=s.session_id) "
+        "FROM sessions s";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) { sqlite3_close(db); return -1; }
+    typedef struct { AgentProjectStats row; char source_names[256]; } ProjectAccumulator;
+    ProjectAccumulator *acc = calloc((size_t)max_projects, sizeof(*acc));
+    if (!acc) { sqlite3_finalize(stmt); sqlite3_close(db); return -1; }
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *source=(const char *)sqlite3_column_text(stmt,0);
+        const char *cwd=(const char *)sqlite3_column_text(stmt,1);
+        const char *file=(const char *)sqlite3_column_text(stmt,2);
+        char project_path[1024]; resolve_project_path(cwd,file,project_path,sizeof(project_path));
+        const char *key=project_path[0]?project_path:"未识别项目";
+        int index=-1;
+        for(int i=0;i<count;i++) if(strcmp(acc[i].row.project_path,key)==0){index=i;break;}
+        if(index<0){
+            if(count>=max_projects) continue;
+            index=count++;
+            snprintf(acc[index].row.project_path,sizeof(acc[index].row.project_path),"%s",key);
+            snprintf(acc[index].row.project,sizeof(acc[index].row.project),"%s",path_basename(project_path));
+        }
+        AgentProjectStats *row=&acc[index].row;
+        row->sessions++;
+        row->input_tokens+=(long)sqlite3_column_int64(stmt,3);
+        row->output_tokens+=(long)sqlite3_column_int64(stmt,4);
+        row->tool_calls+=(long)sqlite3_column_int64(stmt,5);
+        row->code_changes+=(long)sqlite3_column_int64(stmt,6);
+        char token[48]; snprintf(token,sizeof(token),"|%s|",source?source:"");
+        if(!strstr(acc[index].source_names,token)){
+            strncat(acc[index].source_names,token,sizeof(acc[index].source_names)-strlen(acc[index].source_names)-1);
+            row->sources++;
+        }
+    }
+    for(int i=0;i<count;i++) stats[i]=acc[i].row;
+    for(int i=0;i<count;i++) for(int j=i+1;j<count;j++) if(stats[j].sessions>stats[i].sessions){AgentProjectStats t=stats[i];stats[i]=stats[j];stats[j]=t;}
+    free(acc); sqlite3_finalize(stmt); sqlite3_close(db); return count;
+}
+
+int load_mcp_stats(AgentCapabilityStats stats[], int max_rows) {
+    if (!stats || max_rows <= 0) return -1;
+    sqlite3 *db=NULL; sqlite3_stmt *stmt=NULL;
+    if(!open_database(&db)) return -1;
+    const char *sql="SELECT t.tool_name,s.source,COUNT(*) FROM tool_calls t JOIN sessions s ON s.session_id=t.session_id WHERE t.is_mcp=1 GROUP BY t.tool_name,s.source ORDER BY COUNT(*) DESC LIMIT ?1";
+    if(sqlite3_prepare_v2(db,sql,-1,&stmt,NULL)!=SQLITE_OK){sqlite3_close(db);return -1;}
+    sqlite3_bind_int(stmt,1,max_rows); int count=0;
+    while(count<max_rows&&sqlite3_step(stmt)==SQLITE_ROW){
+        AgentCapabilityStats *row=&stats[count++]; memset(row,0,sizeof(*row));
+        const char *tool=(const char *)sqlite3_column_text(stmt,0); const char *source=(const char *)sqlite3_column_text(stmt,1);
+        const char *body=tool&&strncmp(tool,"mcp__",5)==0?tool+5:NULL; const char *sep=body?strstr(body,"__"):NULL;
+        if(sep){snprintf(row->name,sizeof(row->name),"%.*s",(int)(sep-body),body);snprintf(row->detail,sizeof(row->detail),"%s",sep+2);}
+        else {snprintf(row->name,sizeof(row->name),"未识别 Server");snprintf(row->detail,sizeof(row->detail),"%s",tool?tool:"");}
+        snprintf(row->source,sizeof(row->source),"%s",source?source:""); row->calls=(long)sqlite3_column_int64(stmt,2);
+    }
+    sqlite3_finalize(stmt);sqlite3_close(db);return count;
+}
+
+int load_skill_stats(AgentCapabilityStats stats[], int max_rows) {
+    if (!stats || max_rows <= 0) return -1;
+    sqlite3 *db=NULL;sqlite3_stmt *stmt=NULL;if(!open_database(&db))return -1;
+    const char *sql="SELECT COALESCE(NULLIF(t.detail_name,''),'未识别 Skill'),s.source,COUNT(*) FROM tool_calls t JOIN sessions s ON s.session_id=t.session_id WHERE lower(t.tool_name)='skill' GROUP BY COALESCE(NULLIF(t.detail_name,''),'未识别 Skill'),s.source ORDER BY COUNT(*) DESC LIMIT ?1";
+    if(sqlite3_prepare_v2(db,sql,-1,&stmt,NULL)!=SQLITE_OK){sqlite3_close(db);return -1;}
+    sqlite3_bind_int(stmt,1,max_rows);int count=0;while(count<max_rows&&sqlite3_step(stmt)==SQLITE_ROW){AgentCapabilityStats *row=&stats[count++];memset(row,0,sizeof(*row));snprintf(row->name,sizeof(row->name),"%s",sqlite3_column_text(stmt,0));snprintf(row->source,sizeof(row->source),"%s",sqlite3_column_text(stmt,1));row->calls=(long)sqlite3_column_int64(stmt,2);}sqlite3_finalize(stmt);sqlite3_close(db);return count;
+}
+
+bool set_model_pricing(const char *source, const char *model, double input_rate,
+                       double cache_read_rate, double cache_write_rate, double output_rate) {
+    if(!source||!source[0]||!model||!model[0]||input_rate<0||cache_read_rate<0||cache_write_rate<0||output_rate<0)return false;
+    sqlite3 *db=NULL;sqlite3_stmt *stmt=NULL;if(!open_database(&db))return false;
+    const char *sql="INSERT INTO model_pricing(source,model,input_rate,cache_read_rate,cache_write_rate,output_rate,updated_at) VALUES(?1,?2,?3,?4,?5,?6,CURRENT_TIMESTAMP) ON CONFLICT(source,model) DO UPDATE SET input_rate=excluded.input_rate,cache_read_rate=excluded.cache_read_rate,cache_write_rate=excluded.cache_write_rate,output_rate=excluded.output_rate,updated_at=CURRENT_TIMESTAMP";
+    bool ok=sqlite3_prepare_v2(db,sql,-1,&stmt,NULL)==SQLITE_OK;
+    if(ok){sqlite3_bind_text(stmt,1,source,-1,SQLITE_TRANSIENT);sqlite3_bind_text(stmt,2,model,-1,SQLITE_TRANSIENT);sqlite3_bind_double(stmt,3,input_rate);sqlite3_bind_double(stmt,4,cache_read_rate);sqlite3_bind_double(stmt,5,cache_write_rate);sqlite3_bind_double(stmt,6,output_rate);ok=sqlite3_step(stmt)==SQLITE_DONE;}
+    sqlite3_finalize(stmt);sqlite3_close(db);return ok;
+}
+
+int load_model_pricing(AgentModelStats stats[], int max_models) {
+    if(!stats||max_models<=0)return -1;sqlite3 *db=NULL;sqlite3_stmt *stmt=NULL;if(!open_database(&db))return -1;
+    const char *sql="SELECT source,model,input_rate,cache_read_rate,cache_write_rate,output_rate FROM model_pricing ORDER BY source,model";
+    if(sqlite3_prepare_v2(db,sql,-1,&stmt,NULL)!=SQLITE_OK){sqlite3_close(db);return -1;}int count=0;
+    while(count<max_models&&sqlite3_step(stmt)==SQLITE_ROW){AgentModelStats *row=&stats[count++];memset(row,0,sizeof(*row));snprintf(row->source,sizeof(row->source),"%s",sqlite3_column_text(stmt,0));snprintf(row->model,sizeof(row->model),"%s",sqlite3_column_text(stmt,1));row->pricing_configured=true;row->input_rate=sqlite3_column_double(stmt,2);row->cache_read_rate=sqlite3_column_double(stmt,3);row->cache_write_rate=sqlite3_column_double(stmt,4);row->output_rate=sqlite3_column_double(stmt,5);}sqlite3_finalize(stmt);sqlite3_close(db);return count;
 }
 
 /**

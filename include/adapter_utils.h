@@ -93,7 +93,8 @@ bool adapter_upsert_session(sqlite3 *db, const char *session_id, const char *sou
  */
 bool adapter_insert_tool(sqlite3 *db, const char *source_path, long event_number,
                          const char *session_id, const char *timestamp, const char *name,
-                         const char *call_type, bool is_mcp, bool *inserted);
+                         const char *call_type, bool is_mcp, const char *detail_name,
+                         bool *inserted);
 
 /**
  * @brief 插入模型选择记录

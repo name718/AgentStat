@@ -12,6 +12,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <errno.h>
+#include <math.h>
+
+static bool parse_rate(const char *text, double *value) {
+    if(!text||!value)return false;char *end=NULL;errno=0;double parsed=strtod(text,&end);
+    if(errno!=0||end==text||*end!='\0'||!isfinite(parsed)||parsed<0)return false;*value=parsed;return true;
+}
 
 /**
  * 解析并获取目标数据目录路径。
@@ -257,6 +264,32 @@ int parse_and_execute_cli(int argc, char *argv[]) {
         }
         return start_web_server(port);
     }
+
+    if (strcmp(subcommand, "pricing") == 0) {
+        if(argc<3){fprintf(stderr,"用法: %s pricing <set|list>\n",argv[0]);return 1;}
+        if(strcmp(argv[2],"list")==0){
+            AgentModelStats rows[256];int count=load_model_pricing(rows,256);if(count<0)return 1;
+            printf("%-14s %-36s %12s %12s %12s %12s\n","Agent","模型","普通输入","缓存读取","缓存写入","输出");
+            for(int i=0;i<count;i++)printf("%-14.14s %-36.36s %12.4f %12.4f %12.4f %12.4f\n",rows[i].source,rows[i].model,rows[i].input_rate,rows[i].cache_read_rate,rows[i].cache_write_rate,rows[i].output_rate);
+            if(count==0)printf("尚未配置模型价格。\n");return 0;
+        }
+        if(strcmp(argv[2],"set")==0){
+            const char *source=NULL,*model=NULL;double input=0,read=0,write=0,output=0;int flags=0;
+            for(int i=3;i<argc;i++){
+                if(strcmp(argv[i],"--source")==0&&i+1<argc){source=argv[++i];flags|=1;}
+                else if(strcmp(argv[i],"--model")==0&&i+1<argc){model=argv[++i];flags|=2;}
+                else if(strcmp(argv[i],"--input")==0&&i+1<argc&&parse_rate(argv[i+1],&input)){i++;flags|=4;}
+                else if(strcmp(argv[i],"--cache-read")==0&&i+1<argc&&parse_rate(argv[i+1],&read)){i++;flags|=8;}
+                else if(strcmp(argv[i],"--cache-write")==0&&i+1<argc&&parse_rate(argv[i+1],&write)){i++;flags|=16;}
+                else if(strcmp(argv[i],"--output")==0&&i+1<argc&&parse_rate(argv[i+1],&output)){i++;flags|=32;}
+                else {fprintf(stderr,"未知或缺少参数: %s\n",argv[i]);return 1;}
+            }
+            if(flags!=63){fprintf(stderr,"必须提供 --source、--model、--input、--cache-read、--cache-write、--output\n");return 1;}
+            if(!set_model_pricing(source,model,input,read,write,output)){fprintf(stderr,"价格配置失败，请确认费率非负。\n");return 1;}
+            printf("已配置 %s / %s 的精确价格（USD / 百万 Token）。\n",source,model);return 0;
+        }
+        fprintf(stderr,"未知 pricing 操作: %s\n",argv[2]);return 1;
+    }
     
     // "summary" 命令：综合各个模块（使用、代码、Git、采纳率）的数据，做简洁快速的核心报表输出
     if (strcmp(subcommand, "summary") == 0) {
@@ -268,6 +301,8 @@ int parse_and_execute_cli(int argc, char *argv[]) {
         printf("代码变更:   %ld（新增 %ld / 删除 %ld）\n",code.change_events,code.lines_added,code.lines_deleted);
         printf("精确采纳率: %.1f%%（%ld / %ld 行）\n",attribution.acceptance_rate,attribution.accepted_lines,attribution.candidate_lines);
         printf("Git:        %ld 个仓库 / %ld 次提交\n",git.repositories,git.commits);
+        AgentModelStats models[256];int model_count=load_model_stats(models,256);double cost=0;long priced=0,calls=0;
+        if(model_count>=0){for(int i=0;i<model_count;i++){calls+=models[i].model_calls;if(models[i].pricing_configured){priced+=models[i].model_calls;cost+=models[i].estimated_cost_usd;}}if(priced>0)printf("估算费用:   $%.4f（已配置价格覆盖 %ld / %ld 次调用）\n",cost,priced,calls);else printf("估算费用:   未配置（价格覆盖 0 / %ld 次调用）\n",calls);}
         return 0;
     }
     
@@ -336,7 +371,7 @@ int parse_and_execute_cli(int argc, char *argv[]) {
             printf("  Project:     %s\n", rec.project);
             printf("  Model:       %s\n", rec.model);
             printf("  Tokens:      %ld Input / %ld Output\n", rec.input_tokens, rec.output_tokens);
-            printf("  Est. Cost:   $%7.4f USD\n", rec.estimated_cost_usd);
+            printf("  Est. Cost:   未计算（请使用 pricing 配置真实模型价格）\n");
             printf("  Acceptance:  %.1f%% (%d/%d lines)\n\n", rate, rec.lines_accepted, rec.lines_suggested);
         } else {
             fprintf(stderr, "%s✖ Error: Failed to save record to storage.%s\n", COLOR_RED, COLOR_RESET);

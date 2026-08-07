@@ -56,6 +56,11 @@ static void handle_api_summary(int client_fd) {
         send_response(client_fd, "500 Internal Error", "application/json", "{\"error\":\"failed to load real analytics\"}");
         return;
     }
+    AgentModelStats models[256];
+    int model_count=load_model_stats(models,256);long priced_calls=0,total_calls=0;double cost=0;
+    if(model_count<0){send_response(client_fd,"500 Internal Error","application/json","{\"error\":\"failed to load model pricing\"}");return;}
+    for(int i=0;i<model_count;i++){total_calls+=models[i].model_calls;if(models[i].pricing_configured){priced_calls+=models[i].model_calls;cost+=models[i].estimated_cost_usd;}}
+    double coverage=total_calls>0?(double)priced_calls*100.0/(double)total_calls:0;
     char json_buf[4096];
     snprintf(json_buf, sizeof(json_buf),
              "{"
@@ -67,12 +72,13 @@ static void handle_api_summary(int client_fd) {
              "\"total_lines_accepted\":%ld,"
              "\"line_acceptance_rate\":%.2f,"
              "\"tool_calls\":%ld,\"code_changes\":%ld,"
-             "\"metric_scope\":\"real_imported_events\",\"cost_available\":false"
+             "\"metric_scope\":\"real_imported_events\",\"estimated_cost_usd\":%.8f,"
+             "\"priced_model_calls\":%ld,\"total_model_calls\":%ld,\"cost_coverage\":%.2f"
              "}",
              usage.total_sessions, usage.input_tokens, usage.output_tokens,
              usage.input_tokens + usage.output_tokens,
              attribution.candidate_lines, attribution.accepted_lines,
-             attribution.acceptance_rate, usage.tool_calls, code.change_events);
+             attribution.acceptance_rate, usage.tool_calls, code.change_events,cost,priced_calls,total_calls,coverage);
              
     send_response(client_fd, "200 OK", "application/json", json_buf);
 }
@@ -124,12 +130,12 @@ static void handle_api_models(int client_fd) {
     AgentModelStats rows[128];
     int count=load_model_stats(rows,128);
     if(count<0){send_response(client_fd,"500 Internal Error","application/json","{\"error\":\"failed to load models\"}");return;}
-    char *json=malloc((size_t)(count>0?count:1)*512+16);
+    char *json=malloc((size_t)(count>0?count:1)*768+16);
     if(!json){send_response(client_fd,"500 Internal Error","application/json","{\"error\":\"out of memory\"}");return;}
     strcpy(json,"[");
     for(int i=0;i<count;i++){
-        char source[64],model[256],item[512];json_escape(rows[i].source,source,sizeof(source));json_escape(rows[i].model,model,sizeof(model));
-        snprintf(item,sizeof(item),"%s{\"source\":\"%s\",\"model\":\"%s\",\"model_calls\":%ld,\"selections\":%ld,\"input_tokens\":%ld,\"cached_input_tokens\":%ld,\"output_tokens\":%ld}",i?",":"",source,model,rows[i].model_calls,rows[i].selections,rows[i].input_tokens,rows[i].cached_input_tokens,rows[i].output_tokens);
+        char source[64],model[256],item[768];json_escape(rows[i].source,source,sizeof(source));json_escape(rows[i].model,model,sizeof(model));
+        snprintf(item,sizeof(item),"%s{\"source\":\"%s\",\"model\":\"%s\",\"model_calls\":%ld,\"selections\":%ld,\"input_tokens\":%ld,\"cached_input_tokens\":%ld,\"cache_write_input_tokens\":%ld,\"output_tokens\":%ld,\"pricing_configured\":%s,\"input_rate\":%.8f,\"cache_read_rate\":%.8f,\"cache_write_rate\":%.8f,\"output_rate\":%.8f,\"estimated_cost_usd\":%.8f}",i?",":"",source,model,rows[i].model_calls,rows[i].selections,rows[i].input_tokens,rows[i].cached_input_tokens,rows[i].cache_write_input_tokens,rows[i].output_tokens,rows[i].pricing_configured?"true":"false",rows[i].input_rate,rows[i].cache_read_rate,rows[i].cache_write_rate,rows[i].output_rate,rows[i].estimated_cost_usd);
         strcat(json,item);
     }
     strcat(json,"]");send_response(client_fd,"200 OK","application/json",json);free(json);
@@ -139,8 +145,20 @@ static void handle_api_models(int client_fd) {
 static void handle_api_tools(int client_fd) {
     AgentToolStats rows[50];int count=load_tool_stats(rows,50);
     if(count<0){send_response(client_fd,"500 Internal Error","application/json","{\"error\":\"failed to load tools\"}");return;}
-    char *json=malloc((size_t)(count>0?count:1)*384+16);if(!json){send_response(client_fd,"500 Internal Error","application/json","{\"error\":\"out of memory\"}");return;}strcpy(json,"[");
-    for(int i=0;i<count;i++){char name[300],item[384];json_escape(rows[i].tool_name,name,sizeof(name));snprintf(item,sizeof(item),"%s{\"tool_name\":\"%s\",\"calls\":%ld,\"mcp_calls\":%ld}",i?",":"",name,rows[i].calls,rows[i].mcp_calls);strcat(json,item);}strcat(json,"]");send_response(client_fd,"200 OK","application/json",json);free(json);
+    char *json=malloc((size_t)(count>0?count:1)*700+16);if(!json){send_response(client_fd,"500 Internal Error","application/json","{\"error\":\"out of memory\"}");return;}strcpy(json,"[");
+    for(int i=0;i<count;i++){char name[300],detail[300],item[700];json_escape(rows[i].tool_name,name,sizeof(name));json_escape(rows[i].detail_name,detail,sizeof(detail));snprintf(item,sizeof(item),"%s{\"tool_name\":\"%s\",\"detail_name\":\"%s\",\"calls\":%ld,\"mcp_calls\":%ld}",i?",":"",name,detail,rows[i].calls,rows[i].mcp_calls);strcat(json,item);}strcat(json,"]");send_response(client_fd,"200 OK","application/json",json);free(json);
+}
+
+static void handle_api_projects(int client_fd){
+    AgentProjectStats rows[128];int count=load_project_stats(rows,128);if(count<0){send_response(client_fd,"500 Internal Error","application/json","{\"error\":\"failed to load projects\"}");return;}
+    char *json=malloc((size_t)(count>0?count:1)*3000+16);if(!json){send_response(client_fd,"500 Internal Error","application/json","{\"error\":\"out of memory\"}");return;}strcpy(json,"[");
+    for(int i=0;i<count;i++){char name[600],path[2100],item[3000];json_escape(rows[i].project,name,sizeof(name));json_escape(rows[i].project_path,path,sizeof(path));snprintf(item,sizeof(item),"%s{\"project\":\"%s\",\"project_path\":\"%s\",\"sessions\":%ld,\"sources\":%ld,\"input_tokens\":%ld,\"output_tokens\":%ld,\"tool_calls\":%ld,\"code_changes\":%ld}",i?",":"",name,path,rows[i].sessions,rows[i].sources,rows[i].input_tokens,rows[i].output_tokens,rows[i].tool_calls,rows[i].code_changes);strcat(json,item);}strcat(json,"]");send_response(client_fd,"200 OK","application/json",json);free(json);
+}
+
+static void handle_api_capabilities(int client_fd,bool skills){
+    AgentCapabilityStats rows[128];int count=skills?load_skill_stats(rows,128):load_mcp_stats(rows,128);if(count<0){send_response(client_fd,"500 Internal Error","application/json","{\"error\":\"failed to load capabilities\"}");return;}
+    char *json=malloc((size_t)(count>0?count:1)*1200+16);if(!json){send_response(client_fd,"500 Internal Error","application/json","{\"error\":\"out of memory\"}");return;}strcpy(json,"[");
+    for(int i=0;i<count;i++){char name[520],detail[520],source[80],item[1200];json_escape(rows[i].name,name,sizeof(name));json_escape(rows[i].detail,detail,sizeof(detail));json_escape(rows[i].source,source,sizeof(source));snprintf(item,sizeof(item),"%s{\"name\":\"%s\",\"detail\":\"%s\",\"source\":\"%s\",\"calls\":%ld}",i?",":"",name,detail,source,rows[i].calls);strcat(json,item);}strcat(json,"]");send_response(client_fd,"200 OK","application/json",json);free(json);
 }
 
 // 处理用法统计接口请求，组装整体资源使用情况和按来源细分的统计数据，并作为JSON返回
@@ -332,6 +350,12 @@ int start_web_server(int port) {
             handle_api_models(client_fd);
         } else if (strstr(buffer, "GET /api/tools") != NULL) {
             handle_api_tools(client_fd);
+        } else if (strstr(buffer, "GET /api/projects") != NULL) {
+            handle_api_projects(client_fd);
+        } else if (strstr(buffer, "GET /api/mcp") != NULL) {
+            handle_api_capabilities(client_fd,false);
+        } else if (strstr(buffer, "GET /api/skills") != NULL) {
+            handle_api_capabilities(client_fd,true);
         } else if (strstr(buffer, "GET /api/sessions") != NULL) {
             handle_api_records(client_fd);
         } else if (strstr(buffer, "GET /api/records") != NULL) {

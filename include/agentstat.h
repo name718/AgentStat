@@ -74,7 +74,14 @@ typedef struct {
     long selections;                // 选择次数
     long input_tokens;              // 输入token数
     long cached_input_tokens;       // 缓存命中的输入token数
+    long cache_write_input_tokens;  // 缓存写入token数
     long output_tokens;             // 输出token数
+    bool pricing_configured;        // 是否有精确匹配的价格配置
+    double input_rate;              // 普通输入每百万token价格
+    double cache_read_rate;         // 缓存读取每百万token价格
+    double cache_write_rate;        // 缓存写入每百万token价格
+    double output_rate;             // 输出每百万token价格
+    double estimated_cost_usd;      // 基于已配置价格计算的估算费用
 } AgentModelStats;
 
 // 单次会话的详细统计数据结构体
@@ -93,9 +100,28 @@ typedef struct {
 // 工具使用情况的统计数据结构体
 typedef struct {
     char tool_name[256];            // 工具名称
+    char detail_name[256];          // MCP server/tool 或 Skill 名称
     long calls;                     // 调用总次数
     long mcp_calls;                 // 通过MCP调用的次数
 } AgentToolStats;
+
+typedef struct {
+    char project[256];
+    char project_path[1024];
+    long sessions;
+    long sources;
+    long input_tokens;
+    long output_tokens;
+    long tool_calls;
+    long code_changes;
+} AgentProjectStats;
+
+typedef struct {
+    char name[256];
+    char detail[256];
+    char source[32];
+    long calls;
+} AgentCapabilityStats;
 
 // 代码变更相关的统计数据结构体
 typedef struct {

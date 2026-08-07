@@ -83,7 +83,8 @@ static bool import_tools(sqlite3 *db,const char *json,const char *source_path,lo
     sqlite3_stmt *tools=NULL;
     const char *sql="SELECT COALESCE(json_extract(value,'$.id'),''),COALESCE(json_extract(value,'$.name'),''),"
         "COALESCE(json_extract(value,'$.input.file_path'),''),COALESCE(json_extract(value,'$.input.old_string'),''),"
-        "COALESCE(json_extract(value,'$.input.new_string'),''),COALESCE(json_extract(value,'$.input.content'),'') "
+        "COALESCE(json_extract(value,'$.input.new_string'),''),COALESCE(json_extract(value,'$.input.content'),''),"
+        "COALESCE(json_extract(value,'$.input.skill'),'') "
         "FROM json_each(?1,'$.message.content') WHERE json_valid(?1) AND json_extract(value,'$.type')='tool_use'";
     if(sqlite3_prepare_v2(db,sql,-1,&tools,NULL)!=SQLITE_OK) return false;
     sqlite3_bind_text(tools,1,json,-1,SQLITE_TRANSIENT);
@@ -92,10 +93,11 @@ static bool import_tools(sqlite3 *db,const char *json,const char *source_path,lo
         const char *id=(const char*)sqlite3_column_text(tools,0), *name=(const char*)sqlite3_column_text(tools,1);
         const char *file=(const char*)sqlite3_column_text(tools,2), *old_text=(const char*)sqlite3_column_text(tools,3);
         const char *new_text=(const char*)sqlite3_column_text(tools,4), *content=(const char*)sqlite3_column_text(tools,5);
+        const char *detail=(const char*)sqlite3_column_text(tools,6);
         if(!remember_once(seen,id)) { ordinal++; continue; }
         long event_number=-(line_number*1000L+ordinal+1);
         bool inserted=false;
-        ok=adapter_insert_tool(db,source_path,event_number,session_id,timestamp,name,"tool_use",strstr(name,"mcp__")==name,&inserted);
+        ok=adapter_insert_tool(db,source_path,event_number,session_id,timestamp,name,"tool_use",strstr(name,"mcp__")==name,detail,&inserted);
         if(inserted) result->tool_calls_imported++;
         if(ok && (!strcmp(name,"Edit") || !strcmp(name,"Write")) && file[0]) {
             char resolved[PATH_MAX];

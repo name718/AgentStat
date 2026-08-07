@@ -57,6 +57,7 @@ void render_help(const char *prog_name) {
     printf("  %ssync-git%s   同步指定 Git 仓库的提交数据\n", COLOR_GREEN, COLOR_RESET);
     printf("  %sgit-stats%s  查看 Git 提交指标\n", COLOR_GREEN, COLOR_RESET);
     printf("  %sattribution%s 查看 Agent 到 Git 的精确行归因\n", COLOR_GREEN, COLOR_RESET);
+    printf("  %spricing%s    配置或查看模型精确价格\n", COLOR_GREEN, COLOR_RESET);
     printf("  %shelp%s       显示帮助\n\n", COLOR_GREEN, COLOR_RESET);
 
     // 打印 Web 服务的相关参数说明
@@ -73,6 +74,10 @@ void render_help(const char *prog_name) {
     printf("  --suggested <n>       手工建议行数\n");
     printf("  --accepted <n>        手工采纳行数\n");
     printf("  --duration <sec>      会话时长（秒）\n\n");
+
+    printf("%s价格参数（USD / 百万 Token）:%s\n", COLOR_BOLD, COLOR_RESET);
+    printf("  pricing list\n");
+    printf("  pricing set --source <agent> --model <model> --input <rate> --cache-read <rate> --cache-write <rate> --output <rate>\n\n");
 
     // 打印典型使用示例
     printf("%s示例:%s\n", COLOR_BOLD, COLOR_RESET);
