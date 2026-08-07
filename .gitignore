@@ -1,0 +1,34 @@
+# C build outputs
+/agentstat
+/src/*.o
+/build/
+/cmake-build-*/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/compile_commands.json
+
+# Compiler and coverage artifacts
+*.d
+*.a
+*.so
+*.dylib
+*.gcda
+*.gcno
+*.gcov
+
+# Local databases and runtime files
+/.agentstat/
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.tmp
+
+# Editor and operating system files
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

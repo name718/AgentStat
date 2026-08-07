@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AgentStat 数据看板</title>
+  <style>
+    :root {
+      --bg:#f3f5f7;--surface:#fff;--line:#dfe3e8;--text:#17202a;--muted:#66717f;
+      --blue:#1769aa;--green:#16815d;--amber:#a96000;--red:#b42318;--violet:#6941c6;
+    }
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px}
+    button{font:inherit} .shell{min-height:100vh}.topbar{height:64px;background:#18212b;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 28px;border-bottom:3px solid #2f80a8}
+    .brand{display:flex;align-items:center;gap:12px}.mark{width:34px;height:34px;border:1px solid #6c8498;display:grid;place-items:center;font-weight:700;color:#7dd3fc}.brand h1{font-size:18px;margin:0}.brand p{font-size:12px;color:#aebbc7;margin:2px 0 0}
+    .refresh{height:34px;padding:0 14px;border:1px solid #627486;background:#243342;color:#fff;border-radius:4px;cursor:pointer}.refresh:hover{background:#30465a}.refresh:disabled{opacity:.6;cursor:wait}
+    main{max-width:1480px;margin:0 auto;padding:22px 28px 40px}.status{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;color:var(--muted);font-size:12px}.status strong{color:var(--green);font-weight:600}
+    .metrics{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:12px;margin-bottom:16px}.metric{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:16px;min-height:102px}.metric .label{color:var(--muted);font-size:12px}.metric .value{font-size:26px;font-weight:650;margin-top:10px;font-variant-numeric:tabular-nums}.metric .note{font-size:11px;color:var(--muted);margin-top:5px}
+    .grid{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(320px,.75fr);gap:16px;margin-bottom:16px}.panel{background:var(--surface);border:1px solid var(--line);border-radius:6px;min-width:0}.panel-head{height:48px;padding:0 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}.panel-head h2{font-size:14px;margin:0;font-weight:650}.panel-head span{font-size:11px;color:var(--muted)}.panel-body{padding:14px 16px}
+    .table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;white-space:nowrap}th,td{padding:10px 12px;text-align:left;border-bottom:1px solid #edf0f2;font-size:12px}th{color:var(--muted);font-weight:600;background:#fafbfc;position:sticky;top:0}td.num{text-align:right;font-variant-numeric:tabular-nums}tr:last-child td{border-bottom:0}.model{font-weight:600;color:#24435a}.empty{text-align:center!important;color:var(--muted);padding:30px!important}
+    .source{display:inline-flex;align-items:center;height:22px;padding:0 7px;border-radius:3px;background:#eef2f6;color:#3d4c5b;font-size:11px}.source.codex{background:#e8f2fb;color:#155b8f}.source.claude{background:#f7eee7;color:#8b451e}.source.antigravity{background:#eeeafb;color:#5736a3}
+    .bar-row{display:grid;grid-template-columns:minmax(120px,1fr) 3fr 54px;gap:10px;align-items:center;margin:11px 0}.bar-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.bar-track{height:8px;background:#edf0f2;border-radius:2px;overflow:hidden}.bar-fill{height:100%;background:var(--blue)}.bar-value{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px}
+    .code-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.code-stat{border-left:3px solid var(--blue);background:#f7f9fb;padding:10px 12px}.code-stat:nth-child(2){border-color:var(--green)}.code-stat:nth-child(3){border-color:var(--amber)}.code-stat:nth-child(4){border-color:var(--violet)}.code-stat span{display:block;color:var(--muted);font-size:11px}.code-stat strong{display:block;margin-top:5px;font-size:19px;font-variant-numeric:tabular-nums}
+    .session-path{max-width:300px;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}.session-id{max-width:210px;overflow:hidden;text-overflow:ellipsis;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.error{color:var(--red)!important}
+    @media(max-width:1100px){.metrics{grid-template-columns:repeat(3,1fr)}.grid{grid-template-columns:1fr}}@media(max-width:640px){.topbar{padding:0 14px}.brand p{display:none}main{padding:14px}.metrics{grid-template-columns:repeat(2,1fr)}.metric .value{font-size:21px}.code-grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+<div class="shell">
+  <header class="topbar">
+    <div class="brand"><div class="mark">AS</div><div><h1>AgentStat 数据看板</h1><p>本地 Agent 使用与代码采纳分析</p></div></div>
+    <button id="refresh" class="refresh" type="button">刷新数据</button>
+  </header>
+  <main>
+    <div class="status"><span id="status"><strong>正在读取本地数据</strong></span><span id="updated">--</span></div>
+    <section class="metrics">
+      <div class="metric"><div class="label">Agent 会话</div><div class="value" id="sessions">--</div><div class="note" id="source-count">--</div></div>
+      <div class="metric"><div class="label">总 Token</div><div class="value" id="tokens">--</div><div class="note" id="token-detail">--</div></div>
+      <div class="metric"><div class="label">工具调用</div><div class="value" id="tools">--</div><div class="note" id="mcp-detail">--</div></div>
+      <div class="metric"><div class="label">Agent 代码变更</div><div class="value" id="changes">--</div><div class="note" id="line-detail">--</div></div>
+      <div class="metric"><div class="label">精确采纳率</div><div class="value" id="acceptance">--</div><div class="note" id="acceptance-detail">--</div></div>
+      <div class="metric"><div class="label">Git 提交</div><div class="value" id="commits">--</div><div class="note" id="repo-detail">--</div></div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <div class="panel-head"><h2>真实模型用量</h2><span>模型名直接来自 Agent 原始日志</span></div>
+        <div class="table-wrap"><table><thead><tr><th>Agent</th><th>模型</th><th class="num">模型调用</th><th class="num">模型选择</th><th class="num">输入 Token</th><th class="num">缓存读取</th><th class="num">输出 Token</th></tr></thead><tbody id="model-body"></tbody></table></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Agent 来源</h2><span>统一采集层</span></div>
+        <div class="table-wrap"><table><thead><tr><th>来源</th><th class="num">会话</th><th class="num">模型调用</th><th class="num">工具</th><th class="num">代码变更</th></tr></thead><tbody id="source-body"></tbody></table></div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <div class="panel-head"><h2>最近会话</h2><span>最近 50 条</span></div>
+        <div class="table-wrap"><table><thead><tr><th>时间</th><th>Agent</th><th>模型</th><th>工作目录</th><th class="num">输入</th><th class="num">输出</th><th class="num">工具</th><th class="num">变更</th></tr></thead><tbody id="session-body"></tbody></table></div>
+      </div>
+      <div>
+        <div class="panel" style="margin-bottom:16px">
+          <div class="panel-head"><h2>代码结构</h2><span>Agent 成功应用的变更</span></div>
+          <div class="panel-body code-grid">
+            <div class="code-stat"><span>业务代码新增</span><strong id="business-lines">--</strong></div>
+            <div class="code-stat"><span>测试新增</span><strong id="test-lines">--</strong></div>
+            <div class="code-stat"><span>文档新增</span><strong id="doc-lines">--</strong></div>
+            <div class="code-stat"><span>删除行数</span><strong id="deleted-lines">--</strong></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>工具调用排行</h2><span>前 12 项</span></div>
+          <div class="panel-body" id="tool-bars"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<script>
+  const fmt = value => Number(value || 0).toLocaleString('zh-CN');
+  const safe = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const badge = source => `<span class="source ${safe(source)}">${safe(source)}</span>`;
+  const empty = (cols, text='暂无数据') => `<tr><td class="empty" colspan="${cols}">${text}</td></tr>`;
+
+  async function request(path) {
+    const response = await fetch(path, {cache:'no-store'});
+    if (!response.ok) throw new Error(`${path} 返回 ${response.status}`);
+    return response.json();
+  }
+
+  async function load() {
+    const button = document.getElementById('refresh');
+    button.disabled = true;
+    document.getElementById('status').innerHTML = '<strong>正在读取本地数据</strong>';
+    try {
+      const [usage, code, git, attribution, models, tools, sessions] = await Promise.all([
+        request('/api/usage'), request('/api/code'), request('/api/git'), request('/api/attribution'),
+        request('/api/models'), request('/api/tools'), request('/api/sessions')
+      ]);
+      renderMetrics(usage, code, git, attribution);
+      renderSources(usage.sources || []);
+      renderModels(models || []);
+      renderSessions(sessions || []);
+      renderTools(tools || []);
+      renderCode(code);
+      document.getElementById('status').innerHTML = '<strong>真实数据已加载</strong>';
+      document.getElementById('updated').textContent = `更新时间 ${new Date().toLocaleString('zh-CN')}`;
+    } catch (error) {
+      document.getElementById('status').innerHTML = `<strong class="error">加载失败：${safe(error.message)}</strong>`;
+    } finally { button.disabled = false; }
+  }
+
+  function renderMetrics(u, c, g, a) {
+    document.getElementById('sessions').textContent = fmt(u.total_sessions);
+    document.getElementById('source-count').textContent = `${(u.sources || []).length} 个数据来源`;
+    document.getElementById('tokens').textContent = fmt(Number(u.input_tokens || 0) + Number(u.output_tokens || 0));
+    document.getElementById('token-detail').textContent = `输入 ${fmt(u.input_tokens)} · 输出 ${fmt(u.output_tokens)}`;
+    document.getElementById('tools').textContent = fmt(u.tool_calls);
+    document.getElementById('mcp-detail').textContent = `MCP ${fmt(u.mcp_calls)} · ${fmt(u.distinct_tools)} 种工具`;
+    document.getElementById('changes').textContent = fmt(c.change_events);
+    document.getElementById('line-detail').textContent = `新增 ${fmt(c.lines_added)} · 删除 ${fmt(c.lines_deleted)}`;
+    document.getElementById('acceptance').textContent = Number(a.candidate_lines || 0) ? `${Number(a.acceptance_rate).toFixed(1)}%` : '--';
+    document.getElementById('acceptance-detail').textContent = `${fmt(a.accepted_lines)} / ${fmt(a.candidate_lines)} 精确匹配行`;
+    document.getElementById('commits').textContent = fmt(g.commits);
+    document.getElementById('repo-detail').textContent = `${fmt(g.repositories)} 个仓库 · ${fmt(g.files_changed)} 个文件`;
+  }
+
+  function renderSources(rows) {
+    document.getElementById('source-body').innerHTML = rows.length ? rows.map(r => `<tr><td>${badge(r.source)}</td><td class="num">${fmt(r.sessions)}</td><td class="num">${fmt(r.model_calls)}</td><td class="num">${fmt(r.tool_calls)}</td><td class="num">${fmt(r.code_changes)}</td></tr>`).join('') : empty(5);
+  }
+
+  function renderModels(rows) {
+    document.getElementById('model-body').innerHTML = rows.length ? rows.map(r => `<tr><td>${badge(r.source)}</td><td class="model">${safe(r.model)}</td><td class="num">${fmt(r.model_calls)}</td><td class="num">${fmt(r.selections)}</td><td class="num">${fmt(r.input_tokens)}</td><td class="num">${fmt(r.cached_input_tokens)}</td><td class="num">${fmt(r.output_tokens)}</td></tr>`).join('') : empty(7, '尚未采集到模型字段');
+  }
+
+  function renderSessions(rows) {
+    document.getElementById('session-body').innerHTML = rows.length ? rows.map(r => `<tr title="${safe(r.session_id)}"><td>${safe((r.started_at || '').replace('T',' ').replace('Z',''))}</td><td>${badge(r.source)}</td><td class="model">${safe(r.models || '未暴露')}</td><td class="session-path" title="${safe(r.cwd)}">${safe(r.cwd || '--')}</td><td class="num">${fmt(r.input_tokens)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(r.tool_calls)}</td><td class="num">${fmt(r.code_changes)}</td></tr>`).join('') : empty(8);
+  }
+
+  function renderTools(rows) {
+    const list = rows.slice(0,12), max = Math.max(...list.map(r => Number(r.calls)), 1);
+    document.getElementById('tool-bars').innerHTML = list.length ? list.map(r => `<div class="bar-row"><div class="bar-label" title="${safe(r.tool_name)}">${safe(r.tool_name)}</div><div class="bar-track"><div class="bar-fill" style="width:${Math.max(2, Number(r.calls) / max * 100)}%"></div></div><div class="bar-value">${fmt(r.calls)}</div></div>`).join('') : '<div class="empty">暂无工具调用</div>';
+  }
+
+  function renderCode(c) {
+    document.getElementById('business-lines').textContent = fmt(c.business_lines_added);
+    document.getElementById('test-lines').textContent = fmt(c.test_lines_added);
+    document.getElementById('doc-lines').textContent = fmt(c.documentation_lines_added);
+    document.getElementById('deleted-lines').textContent = fmt(c.lines_deleted);
+  }
+
+  document.getElementById('refresh').addEventListener('click', load);
+  load();
+</script>
+</body>
+</html>
