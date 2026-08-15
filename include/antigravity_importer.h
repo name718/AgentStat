@@ -1,8 +1,8 @@
 #ifndef ANTIGRAVITY_IMPORTER_H
 #define ANTIGRAVITY_IMPORTER_H
 
-#include <stdbool.h>
 #include "importer.h"
+#include <stdbool.h>
 
 /**
  * @brief 从指定的 JSONL 文件导入 Antigravity 数据

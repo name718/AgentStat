@@ -8,12 +8,12 @@
  * 记录导入过程中的统计信息
  */
 typedef struct {
-    long lines_read;                     // 读取的行数
-    long usage_events_imported;          // 成功导入的使用事件数
-    long duplicate_usage_events_skipped; // 跳过的重复使用事件数
-    long tool_calls_imported;            // 导入的工具调用数
-    long code_changes_imported;          // 导入的代码变更数
-    bool session_imported;               // 会话是否成功导入
+  long lines_read;                     // 读取的行数
+  long usage_events_imported;          // 成功导入的使用事件数
+  long duplicate_usage_events_skipped; // 跳过的重复使用事件数
+  long tool_calls_imported;            // 导入的工具调用数
+  long code_changes_imported;          // 导入的代码变更数
+  bool session_imported;               // 会话是否成功导入
 } CodexImportResult;
 
 /**
@@ -21,14 +21,14 @@ typedef struct {
  * 记录同步目录时的统计信息
  */
 typedef struct {
-    long files_scanned;                  // 扫描的文件数
-    long files_failed;                   // 处理失败的文件数
-    long sessions_imported;              // 成功导入的会话数
-    long lines_read;                     // 读取的总行数
-    long usage_events_imported;          // 成功导入的使用事件数
-    long duplicate_usage_events_skipped; // 跳过的重复使用事件数
-    long tool_calls_imported;            // 导入的工具调用数
-    long code_changes_imported;          // 导入的代码变更数
+  long files_scanned;                  // 扫描的文件数
+  long files_failed;                   // 处理失败的文件数
+  long sessions_imported;              // 成功导入的会话数
+  long lines_read;                     // 读取的总行数
+  long usage_events_imported;          // 成功导入的使用事件数
+  long duplicate_usage_events_skipped; // 跳过的重复使用事件数
+  long tool_calls_imported;            // 导入的工具调用数
+  long code_changes_imported;          // 导入的代码变更数
 } CodexSyncResult;
 
 /**

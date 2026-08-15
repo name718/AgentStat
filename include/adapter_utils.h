@@ -1,10 +1,10 @@
 #ifndef ADAPTER_UTILS_H
 #define ADAPTER_UTILS_H
 
+#include <sqlite3.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
-#include <sqlite3.h>
 
 /**
  * @brief 从文件指针中读取一行 JSONL 数据
@@ -22,7 +22,8 @@ char *adapter_read_jsonl_line(FILE *fp);
  * @param size 输出缓冲区的大小
  * @return 成功提取返回 true，否则返回 false
  */
-bool adapter_json_text(sqlite3 *db, const char *json, const char *path, char *out, size_t size);
+bool adapter_json_text(sqlite3 *db, const char *json, const char *path,
+                       char *out, size_t size);
 
 /**
  * @brief 从 JSON 字符串中提取指定路径的整数数据
@@ -74,8 +75,9 @@ const char *adapter_classify_path(const char *path);
  * @param inserted 用于返回是否发生了实际插入操作的标志指针
  * @return 操作成功返回 true，否则返回 false
  */
-bool adapter_upsert_session(sqlite3 *db, const char *session_id, const char *source,
-                            const char *source_path, const char *cwd, const char *started_at,
+bool adapter_upsert_session(sqlite3 *db, const char *session_id,
+                            const char *source, const char *source_path,
+                            const char *cwd, const char *started_at,
                             const char *provider, bool *inserted);
 
 /**
@@ -91,10 +93,11 @@ bool adapter_upsert_session(sqlite3 *db, const char *session_id, const char *sou
  * @param inserted 用于返回是否成功插入的标志指针
  * @return 操作成功返回 true，否则返回 false
  */
-bool adapter_insert_tool(sqlite3 *db, const char *source_path, long event_number,
-                         const char *session_id, const char *timestamp, const char *name,
-                         const char *call_type, bool is_mcp, const char *detail_name,
-                         bool *inserted);
+bool adapter_insert_tool(sqlite3 *db, const char *source_path,
+                         long event_number, const char *session_id,
+                         const char *timestamp, const char *name,
+                         const char *call_type, bool is_mcp,
+                         const char *detail_name, bool *inserted);
 
 /**
  * @brief 插入模型选择记录
@@ -107,9 +110,10 @@ bool adapter_insert_tool(sqlite3 *db, const char *source_path, long event_number
  * @param inserted 用于返回是否成功插入的标志指针
  * @return 操作成功返回 true，否则返回 false
  */
-bool adapter_insert_model_selection(sqlite3 *db, const char *source_path, long event_number,
-                                    const char *session_id, const char *timestamp,
-                                    const char *model, bool *inserted);
+bool adapter_insert_model_selection(sqlite3 *db, const char *source_path,
+                                    long event_number, const char *session_id,
+                                    const char *timestamp, const char *model,
+                                    bool *inserted);
 
 /**
  * @brief 记录文件代码变更内容
@@ -126,10 +130,11 @@ bool adapter_insert_model_selection(sqlite3 *db, const char *source_path, long e
  * @param inserted 用于返回是否成功插入的标志指针
  * @return 操作成功返回 true，否则返回 false
  */
-bool adapter_record_text_change(sqlite3 *db, const char *source_path, long event_number,
-                                const char *session_id, const char *turn_id,
-                                const char *timestamp, const char *file_path,
-                                const char *change_type, const char *old_text,
-                                const char *new_text, bool *inserted);
+bool adapter_record_text_change(sqlite3 *db, const char *source_path,
+                                long event_number, const char *session_id,
+                                const char *turn_id, const char *timestamp,
+                                const char *file_path, const char *change_type,
+                                const char *old_text, const char *new_text,
+                                bool *inserted);
 
 #endif

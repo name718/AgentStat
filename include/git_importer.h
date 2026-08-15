@@ -8,9 +8,9 @@
  * 记录Git仓库同步过程中的统计信息
  */
 typedef struct {
-    long commits_scanned;  // 扫描到的Git提交总数
-    long commits_imported; // 成功导入的Git提交数
-    long files_imported;   // 成功导入的文件数
+  long commits_scanned;  // 扫描到的Git提交总数
+  long commits_imported; // 成功导入的Git提交数
+  long files_imported;   // 成功导入的文件数
 } GitImportResult;
 
 /**
