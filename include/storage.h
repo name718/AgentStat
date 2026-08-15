@@ -21,26 +21,37 @@ void seed_mock_data(void);
 // 初始化存储系统（如创建表结构等），返回是否初始化成功
 bool initialize_storage(void);
 
-// 加载总体使用情况的统计数据
+// 加载总体使用情况的统计数据（支持起止时间范围过滤）
 bool load_usage_stats(AgentUsageStats *stats);
+bool load_usage_stats_filtered(AgentUsageStats *stats, const char *start_date, const char *end_date);
 
 // 加载按来源分类的统计数据，返回加载的来源数量
 int load_source_stats(AgentSourceStats stats[], int max_sources);
+int load_source_stats_filtered(AgentSourceStats stats[], int max_sources, const char *start_date, const char *end_date);
 
 // 加载按模型分类的统计数据，返回加载的模型数量
 int load_model_stats(AgentModelStats stats[], int max_models);
+int load_model_stats_filtered(AgentModelStats stats[], int max_models, const char *start_date, const char *end_date);
 
 // 加载最近会话的统计数据，返回加载的会话数量
 int load_recent_session_stats(AgentSessionStats stats[], int max_sessions);
+int load_recent_session_stats_filtered(AgentSessionStats stats[], int max_sessions, const char *start_date, const char *end_date);
 
 // 加载工具使用的统计数据，返回加载的工具数量
 int load_tool_stats(AgentToolStats stats[], int max_tools);
+int load_tool_stats_filtered(AgentToolStats stats[], int max_tools, const char *start_date, const char *end_date);
 
 int load_project_stats(AgentProjectStats stats[], int max_projects);
+int load_project_stats_filtered(AgentProjectStats stats[], int max_projects, const char *start_date, const char *end_date);
+
 int load_mcp_stats(AgentCapabilityStats stats[], int max_rows);
+int load_mcp_stats_filtered(AgentCapabilityStats stats[], int max_rows, const char *start_date, const char *end_date);
+
 int load_skill_stats(AgentCapabilityStats stats[], int max_rows);
-int load_period_stats(AgentPeriodStats stats[], int max_rows,
-                      const char *period);
+int load_skill_stats_filtered(AgentCapabilityStats stats[], int max_rows, const char *start_date, const char *end_date);
+
+int load_period_stats(AgentPeriodStats stats[], int max_rows, const char *period);
+int load_period_stats_filtered(AgentPeriodStats stats[], int max_rows, const char *period, const char *start_date, const char *end_date);
 
 bool set_model_pricing(const char *source, const char *model, double input_rate,
                        double cache_read_rate, double cache_write_rate,
@@ -49,12 +60,15 @@ int load_model_pricing(AgentModelStats stats[], int max_models);
 
 // 加载代码变更的统计数据
 bool load_code_stats(AgentCodeStats *stats);
+bool load_code_stats_filtered(AgentCodeStats *stats, const char *start_date, const char *end_date);
 
 // 加载与Git相关的统计数据
 bool load_git_stats(AgentGitStats *stats);
+bool load_git_stats_filtered(AgentGitStats *stats, const char *start_date, const char *end_date);
 
 // 加载代码采纳率等归属相关的统计数据
 bool load_attribution_stats(AgentAttributionStats *stats);
+bool load_attribution_stats_filtered(AgentAttributionStats *stats, const char *start_date, const char *end_date);
 
 // 查询指定会话的元数据与原始日志路径
 bool get_session_source_info(const char *session_id, char *out_source, size_t source_size,

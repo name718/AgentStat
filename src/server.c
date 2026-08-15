@@ -331,19 +331,45 @@ static void handle_api_sync(int client_fd, bool is_head) {
   }
 }
 
+static bool parse_query_param(const char *query, const char *key, char *out,
+                               size_t out_size) {
+  if (!query || !key || !out || out_size == 0)
+    return false;
+  out[0] = '\0';
+  char pattern[128];
+  snprintf(pattern, sizeof(pattern), "%s=", key);
+  const char *p = strstr(query, pattern);
+  if (!p && (query == strstr(query, pattern + 1))) {
+    // exact match at start without prefix
+    p = query;
+  }
+  if (!p)
+    return false;
+  p += strlen(pattern);
+  const char *end = strchr(p, '&');
+  size_t len = end ? (size_t)(end - p) : strlen(p);
+  if (len >= out_size)
+    len = out_size - 1;
+  strncpy(out, p, len);
+  out[len] = '\0';
+  return true;
+}
+
 // 处理 /api/summary
-static void handle_api_summary(int client_fd, bool is_head) {
+static void handle_api_summary(int client_fd, const char *start_date,
+                               const char *end_date, bool is_head) {
   AgentUsageStats usage;
   AgentCodeStats code;
   AgentAttributionStats attribution;
-  if (!load_usage_stats(&usage) || !load_code_stats(&code) ||
-      !load_attribution_stats(&attribution)) {
+  if (!load_usage_stats_filtered(&usage, start_date, end_date) ||
+      !load_code_stats_filtered(&code, start_date, end_date) ||
+      !load_attribution_stats_filtered(&attribution, start_date, end_date)) {
     send_error_response(client_fd, 500, "failed to load real analytics",
                         is_head);
     return;
   }
   AgentModelStats models[256];
-  int model_count = load_model_stats(models, 256);
+  int model_count = load_model_stats_filtered(models, 256, start_date, end_date);
   long priced_calls = 0, total_calls = 0;
   double cost = 0;
   if (model_count < 0) {
@@ -384,9 +410,10 @@ static void handle_api_summary(int client_fd, bool is_head) {
 }
 
 // 处理 /api/sessions 和 /api/records
-static void handle_api_records(int client_fd, bool is_head) {
+static void handle_api_records(int client_fd, const char *start_date,
+                               const char *end_date, bool is_head) {
   AgentSessionStats records[100];
-  int count = load_recent_session_stats(records, 100);
+  int count = load_recent_session_stats_filtered(records, 100, start_date, end_date);
   if (count < 0) {
     send_error_response(client_fd, 500, "failed to load sessions", is_head);
     return;
@@ -429,9 +456,10 @@ static void handle_api_records(int client_fd, bool is_head) {
 }
 
 // 处理 /api/models
-static void handle_api_models(int client_fd, bool is_head) {
+static void handle_api_models(int client_fd, const char *start_date,
+                              const char *end_date, bool is_head) {
   AgentModelStats rows[128];
-  int count = load_model_stats(rows, 128);
+  int count = load_model_stats_filtered(rows, 128, start_date, end_date);
   if (count < 0) {
     send_error_response(client_fd, 500, "failed to load models", is_head);
     return;
@@ -467,9 +495,10 @@ static void handle_api_models(int client_fd, bool is_head) {
 }
 
 // 处理 /api/tools
-static void handle_api_tools(int client_fd, bool is_head) {
+static void handle_api_tools(int client_fd, const char *start_date,
+                             const char *end_date, bool is_head) {
   AgentToolStats rows[100];
-  int count = load_tool_stats(rows, 100);
+  int count = load_tool_stats_filtered(rows, 100, start_date, end_date);
   if (count < 0) {
     send_error_response(client_fd, 500, "failed to load tools", is_head);
     return;
@@ -496,9 +525,10 @@ static void handle_api_tools(int client_fd, bool is_head) {
 }
 
 // 处理 /api/projects
-static void handle_api_projects(int client_fd, bool is_head) {
+static void handle_api_projects(int client_fd, const char *start_date,
+                                const char *end_date, bool is_head) {
   AgentProjectStats rows[128];
-  int count = load_project_stats(rows, 128);
+  int count = load_project_stats_filtered(rows, 128, start_date, end_date);
   if (count < 0) {
     send_error_response(client_fd, 500, "failed to load projects", is_head);
     return;
@@ -531,9 +561,12 @@ static void handle_api_projects(int client_fd, bool is_head) {
 }
 
 // 处理 /api/mcp 与 /api/skills
-static void handle_api_capabilities(int client_fd, bool skills, bool is_head) {
+static void handle_api_capabilities(int client_fd, bool skills,
+                                   const char *start_date,
+                                   const char *end_date, bool is_head) {
   AgentCapabilityStats rows[128];
-  int count = skills ? load_skill_stats(rows, 128) : load_mcp_stats(rows, 128);
+  int count = skills ? load_skill_stats_filtered(rows, 128, start_date, end_date)
+                     : load_mcp_stats_filtered(rows, 128, start_date, end_date);
   if (count < 0) {
     send_error_response(client_fd, 500, "failed to load capabilities", is_head);
     return;
@@ -562,15 +595,16 @@ static void handle_api_capabilities(int client_fd, bool skills, bool is_head) {
 
 // 处理 /api/timeseries
 static void handle_api_timeseries(int client_fd, const char *period,
+                                  const char *start_date, const char *end_date,
                                   bool is_head) {
   if (!period ||
       (strcmp(period, "day") != 0 && strcmp(period, "week") != 0 &&
        strcmp(period, "month") != 0)) {
     period = "day";
   }
-  int limit = strcmp(period, "day") == 0 ? 30 : 12;
-  AgentPeriodStats rows[30];
-  int count = load_period_stats(rows, limit, period);
+  int limit = strcmp(period, "day") == 0 ? 365 : 52;
+  AgentPeriodStats rows[365];
+  int count = load_period_stats_filtered(rows, limit, period, start_date, end_date);
   if (count < 0) {
     send_error_response(client_fd, 400, "failed to load time series", is_head);
     return;
@@ -593,8 +627,7 @@ static void handle_api_timeseries(int client_fd, const char *period,
         "tokens\":%ld,"
         "\"tool_calls\":%ld,\"mcp_calls\":%ld,\"code_changes\":%ld,\"lines_"
         "added\":%ld,"
-        "\"lines_deleted\":%ld,\"priced_model_calls\":%ld,\"estimated_cost_"
-        "usd\":%.8f}",
+        "\"lines_deleted\":%ld,\"priced_model_calls\":%ld,\"estimated_cost_usd\":%.8f}",
         i ? "," : "", rows[i].period_start, rows[i].sessions,
         rows[i].model_calls, rows[i].input_tokens, rows[i].cached_input_tokens,
         rows[i].cache_write_input_tokens, rows[i].output_tokens,
@@ -609,9 +642,10 @@ static void handle_api_timeseries(int client_fd, const char *period,
 }
 
 // 处理 /api/usage
-static void handle_api_usage(int client_fd, bool is_head) {
+static void handle_api_usage(int client_fd, const char *start_date,
+                             const char *end_date, bool is_head) {
   AgentUsageStats stats;
-  if (!load_usage_stats(&stats)) {
+  if (!load_usage_stats_filtered(&stats, start_date, end_date)) {
     send_error_response(client_fd, 500, "failed to load usage stats", is_head);
     return;
   }
@@ -635,7 +669,7 @@ static void handle_api_usage(int client_fd, bool is_head) {
       stats.successful_tokens, stats.failed_tokens,
       stats.avg_tokens_per_successful_session, stats.failed_token_ratio);
   AgentSourceStats sources[MAX_AGENT_SOURCES];
-  int source_count = load_source_stats(sources, MAX_AGENT_SOURCES);
+  int source_count = load_source_stats_filtered(sources, MAX_AGENT_SOURCES, start_date, end_date);
   for (int i = 0;
        i < source_count && written > 0 && (size_t)written < sizeof(json_buf);
        i++) {
@@ -656,9 +690,10 @@ static void handle_api_usage(int client_fd, bool is_head) {
 }
 
 // 处理 /api/code
-static void handle_api_code(int client_fd, bool is_head) {
+static void handle_api_code(int client_fd, const char *start_date,
+                            const char *end_date, bool is_head) {
   AgentCodeStats stats;
-  if (!load_code_stats(&stats)) {
+  if (!load_code_stats_filtered(&stats, start_date, end_date)) {
     send_error_response(client_fd, 500, "failed to load code stats", is_head);
     return;
   }
@@ -679,9 +714,10 @@ static void handle_api_code(int client_fd, bool is_head) {
 }
 
 // 处理 /api/git
-static void handle_api_git(int client_fd, bool is_head) {
+static void handle_api_git(int client_fd, const char *start_date,
+                           const char *end_date, bool is_head) {
   AgentGitStats stats;
-  if (!load_git_stats(&stats)) {
+  if (!load_git_stats_filtered(&stats, start_date, end_date)) {
     send_error_response(client_fd, 500, "failed to load git stats", is_head);
     return;
   }
@@ -700,9 +736,10 @@ static void handle_api_git(int client_fd, bool is_head) {
 }
 
 // 处理 /api/attribution
-static void handle_api_attribution(int client_fd, bool is_head) {
+static void handle_api_attribution(int client_fd, const char *start_date,
+                                   const char *end_date, bool is_head) {
   AgentAttributionStats stats;
-  if (!load_attribution_stats(&stats)) {
+  if (!load_attribution_stats_filtered(&stats, start_date, end_date)) {
     send_error_response(client_fd, 500, "failed to load attribution stats",
                         is_head);
     return;
@@ -905,29 +942,42 @@ static void process_client_request(int client_fd) {
     }
   }
 
+  // 解析公共日期范围参数 (支持 start/start_date, end/end_date)
+  char start_date[32] = {0};
+  char end_date[32] = {0};
+  parse_query_param(query, "start", start_date, sizeof(start_date));
+  if (!start_date[0])
+    parse_query_param(query, "start_date", start_date, sizeof(start_date));
+  parse_query_param(query, "end", end_date, sizeof(end_date));
+  if (!end_date[0])
+    parse_query_param(query, "end_date", end_date, sizeof(end_date));
+
+  const char *p_start = start_date[0] ? start_date : NULL;
+  const char *p_end = end_date[0] ? end_date : NULL;
+
   // API 路由分发
   if (strcmp(path, "/api/sync") == 0) {
     handle_api_sync(client_fd, is_head);
   } else if (strcmp(path, "/api/summary") == 0) {
-    handle_api_summary(client_fd, is_head);
+    handle_api_summary(client_fd, p_start, p_end, is_head);
   } else if (strcmp(path, "/api/usage") == 0) {
-    handle_api_usage(client_fd, is_head);
+    handle_api_usage(client_fd, p_start, p_end, is_head);
   } else if (strcmp(path, "/api/code") == 0) {
-    handle_api_code(client_fd, is_head);
+    handle_api_code(client_fd, p_start, p_end, is_head);
   } else if (strcmp(path, "/api/git") == 0) {
-    handle_api_git(client_fd, is_head);
+    handle_api_git(client_fd, p_start, p_end, is_head);
   } else if (strcmp(path, "/api/attribution") == 0) {
-    handle_api_attribution(client_fd, is_head);
+    handle_api_attribution(client_fd, p_start, p_end, is_head);
   } else if (strcmp(path, "/api/models") == 0) {
-    handle_api_models(client_fd, is_head);
+    handle_api_models(client_fd, p_start, p_end, is_head);
   } else if (strcmp(path, "/api/tools") == 0) {
-    handle_api_tools(client_fd, is_head);
+    handle_api_tools(client_fd, p_start, p_end, is_head);
   } else if (strcmp(path, "/api/projects") == 0) {
-    handle_api_projects(client_fd, is_head);
+    handle_api_projects(client_fd, p_start, p_end, is_head);
   } else if (strcmp(path, "/api/mcp") == 0) {
-    handle_api_capabilities(client_fd, false, is_head);
+    handle_api_capabilities(client_fd, false, p_start, p_end, is_head);
   } else if (strcmp(path, "/api/skills") == 0) {
-    handle_api_capabilities(client_fd, true, is_head);
+    handle_api_capabilities(client_fd, true, p_start, p_end, is_head);
   } else if (strcmp(path, "/api/timeseries") == 0) {
     const char *period = "day";
     if (strstr(query, "period=week")) {
@@ -937,10 +987,10 @@ static void process_client_request(int client_fd) {
     } else if (strstr(query, "period=day")) {
       period = "day";
     }
-    handle_api_timeseries(client_fd, period, is_head);
+    handle_api_timeseries(client_fd, period, p_start, p_end, is_head);
   } else if (strcmp(path, "/api/sessions") == 0 ||
              strcmp(path, "/api/records") == 0) {
-    handle_api_records(client_fd, is_head);
+    handle_api_records(client_fd, p_start, p_end, is_head);
   } else if (strcmp(path, "/api/transcript") == 0 ||
              strcmp(path, "/api/session_detail") == 0) {
     char req_session_id[256] = {0};

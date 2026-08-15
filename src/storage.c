@@ -453,18 +453,32 @@ bool initialize_storage(void) {
   return true;
 }
 
+static void append_date_clause(char *sql, size_t max_size, const char *col,
+                               const char *start_date, const char *end_date,
+                               bool has_where) {
+  if ((!start_date || !start_date[0]) && (!end_date || !end_date[0]))
+    return;
+  char buf[256] = {0};
+  const char *prefix = has_where ? "AND" : "WHERE";
+  if (start_date && start_date[0] && end_date && end_date[0]) {
+    snprintf(buf, sizeof(buf),
+             " %s (substr(%s, 1, 10) >= '%s' AND substr(%s, 1, 10) <= '%s')",
+             prefix, col, start_date, col, end_date);
+  } else if (start_date && start_date[0]) {
+    snprintf(buf, sizeof(buf), " %s substr(%s, 1, 10) >= '%s'", prefix, col,
+             start_date);
+  } else if (end_date && end_date[0]) {
+    snprintf(buf, sizeof(buf), " %s substr(%s, 1, 10) <= '%s'", prefix, col,
+             end_date);
+  }
+  strncat(sql, buf, max_size - strlen(sql) - 1);
+}
+
 /**
- * @brief 加载全局的 Agent 使用情况统计数据
- *
- * 从 model_usage_events 和 tool_calls
- * 等表中汇总查询，计算总会话数、模型调用次数、Token
- * 消耗、工具调用等全局统计信息。 不统计标记为 '<synthetic>' 的虚拟模型数据。
- *
- * @param stats 用于输出统计结果的 AgentUsageStats 结构体指针
- * @return true 加载成功
- * @return false 加载失败
+ * @brief 加载全局的 Agent 使用情况统计数据（支持时间过滤）
  */
-bool load_usage_stats(AgentUsageStats *stats) {
+bool load_usage_stats_filtered(AgentUsageStats *stats, const char *start_date,
+                               const char *end_date) {
   if (!stats)
     return false;
   memset(stats, 0, sizeof(*stats));
@@ -472,16 +486,28 @@ bool load_usage_stats(AgentUsageStats *stats) {
   sqlite3_stmt *stmt = NULL;
   if (!open_database(&db))
     return false;
-  const char *sql = "SELECT (SELECT COUNT(*) FROM sessions),"
-                    "COUNT(*),COALESCE(SUM(input_tokens),0),COALESCE(SUM("
-                    "cached_input_tokens),0),"
-                    "COALESCE(SUM(cache_write_input_tokens),0),COALESCE(SUM("
-                    "output_tokens),0),"
-                    "COALESCE(SUM(reasoning_output_tokens),0),"
-                    "(SELECT COUNT(*) FROM tool_calls),(SELECT COUNT(*) FROM "
-                    "tool_calls WHERE is_mcp=1),"
-                    "(SELECT COUNT(DISTINCT tool_name) FROM tool_calls) FROM "
-                    "model_usage_events WHERE model<>'<synthetic>'";
+
+  char sess_w[128] = {0};
+  char tool_w[128] = {0};
+  char tool_and[128] = {0};
+  char usage_and[128] = {0};
+  append_date_clause(sess_w, sizeof(sess_w), "started_at", start_date, end_date, false);
+  append_date_clause(tool_w, sizeof(tool_w), "timestamp", start_date, end_date, false);
+  append_date_clause(tool_and, sizeof(tool_and), "timestamp", start_date, end_date, true);
+  append_date_clause(usage_and, sizeof(usage_and), "timestamp", start_date, end_date, true);
+
+  char sql[2048];
+  snprintf(sql, sizeof(sql),
+           "SELECT (SELECT COUNT(*) FROM sessions %s),"
+           "COUNT(*),COALESCE(SUM(input_tokens),0),COALESCE(SUM(cached_input_tokens),0),"
+           "COALESCE(SUM(cache_write_input_tokens),0),COALESCE(SUM(output_tokens),0),"
+           "COALESCE(SUM(reasoning_output_tokens),0),"
+           "(SELECT COUNT(*) FROM tool_calls %s),"
+           "(SELECT COUNT(*) FROM tool_calls WHERE is_mcp=1 %s),"
+           "(SELECT COUNT(DISTINCT tool_name) FROM tool_calls %s) "
+           "FROM model_usage_events WHERE model<>'<synthetic>' %s",
+           sess_w, tool_w, tool_and, tool_w, usage_and);
+
   bool ok = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK &&
             sqlite3_step(stmt) == SQLITE_ROW;
   if (ok) {
@@ -502,24 +528,34 @@ bool load_usage_stats(AgentUsageStats *stats) {
   sqlite3_finalize(stmt);
 
   // 计算任务成功/失败分布与对应 Token 消耗 (基于 Hash Join 极速聚合)
-  const char *sess_breakdown_sql =
+  char s_where[128] = {0};
+  char u_where[128] = {0};
+  char c_where[128] = {0};
+  append_date_clause(s_where, sizeof(s_where), "started_at", start_date, end_date, false);
+  append_date_clause(u_where, sizeof(u_where), "timestamp", start_date, end_date, true);
+  append_date_clause(c_where, sizeof(c_where), "timestamp", start_date, end_date, false);
+
+  char sess_breakdown_sql[2048];
+  snprintf(sess_breakdown_sql, sizeof(sess_breakdown_sql),
       "SELECT "
       " COUNT(CASE WHEN c.code_cnt > 0 THEN 1 END) AS succ_sess,"
       " COALESCE(SUM(CASE WHEN c.code_cnt > 0 THEN u.total_tok ELSE 0 END), 0) AS succ_tok,"
       " COUNT(CASE WHEN COALESCE(c.code_cnt, 0) = 0 THEN 1 END) AS fail_sess,"
       " COALESCE(SUM(CASE WHEN COALESCE(c.code_cnt, 0) = 0 THEN u.total_tok ELSE 0 END), 0) AS fail_tok "
-      "FROM sessions s "
+      "FROM (SELECT session_id FROM sessions %s) s "
       "LEFT JOIN ("
       "  SELECT session_id, SUM(input_tokens + output_tokens) AS total_tok "
       "  FROM model_usage_events "
-      "  WHERE model <> '<synthetic>' "
+      "  WHERE model <> '<synthetic>' %s"
       "  GROUP BY session_id"
       ") u ON u.session_id = s.session_id "
       "LEFT JOIN ("
       "  SELECT session_id, COUNT(*) AS code_cnt "
-      "  FROM code_changes "
+      "  FROM code_changes %s"
       "  GROUP BY session_id"
-      ") c ON c.session_id = s.session_id";
+      ") c ON c.session_id = s.session_id",
+      s_where, u_where, c_where);
+
   sqlite3_stmt *b_stmt = NULL;
   if (sqlite3_prepare_v2(db, sess_breakdown_sql, -1, &b_stmt, NULL) == SQLITE_OK &&
       sqlite3_step(b_stmt) == SQLITE_ROW) {
@@ -547,6 +583,10 @@ bool load_usage_stats(AgentUsageStats *stats) {
   return ok;
 }
 
+bool load_usage_stats(AgentUsageStats *stats) {
+  return load_usage_stats_filtered(stats, NULL, NULL);
+}
+
 /**
  * @brief 加载按数据来源 (source) 分组的使用统计数据
  *
@@ -557,33 +597,50 @@ bool load_usage_stats(AgentUsageStats *stats) {
  * @param max_sources 数组的最大容量，防止越界
  * @return int 成功返回加载的来源记录数量，失败返回 -1
  */
-int load_source_stats(AgentSourceStats stats[], int max_sources) {
+/**
+ * @brief 加载按数据来源 (source) 分组的使用统计数据（支持时间过滤）
+ */
+int load_source_stats_filtered(AgentSourceStats stats[], int max_sources,
+                               const char *start_date, const char *end_date) {
   if (!stats || max_sources <= 0)
     return -1;
   sqlite3 *db = NULL;
   sqlite3_stmt *stmt = NULL;
   if (!open_database(&db))
     return -1;
-  const char *sql =
+
+  char sess_w[128] = {0};
+  char u_and[128] = {0};
+  char t_and[128] = {0};
+  char c_and[128] = {0};
+  append_date_clause(sess_w, sizeof(sess_w), "s.started_at", start_date, end_date, false);
+  append_date_clause(u_and, sizeof(u_and), "u.timestamp", start_date, end_date, true);
+  append_date_clause(t_and, sizeof(t_and), "t.timestamp", start_date, end_date, true);
+  append_date_clause(c_and, sizeof(c_and), "c.timestamp", start_date, end_date, true);
+
+  char sql[4096];
+  snprintf(sql, sizeof(sql),
       "SELECT s.source,COUNT(*),"
       "(SELECT COUNT(*) FROM model_usage_events u JOIN sessions us ON "
       "us.session_id=u.session_id WHERE us.source=s.source AND "
-      "u.model<>'<synthetic>'),"
+      "u.model<>'<synthetic>' %s),"
       "(SELECT COALESCE(SUM(u.input_tokens),0) FROM model_usage_events u JOIN "
       "sessions us ON us.session_id=u.session_id WHERE us.source=s.source AND "
-      "u.model<>'<synthetic>'),"
+      "u.model<>'<synthetic>' %s),"
       "(SELECT COALESCE(SUM(u.cached_input_tokens),0) FROM model_usage_events "
       "u JOIN sessions us ON us.session_id=u.session_id WHERE "
-      "us.source=s.source AND u.model<>'<synthetic>'),"
+      "us.source=s.source AND u.model<>'<synthetic>' %s),"
       "(SELECT COALESCE(SUM(u.output_tokens),0) FROM model_usage_events u JOIN "
       "sessions us ON us.session_id=u.session_id WHERE us.source=s.source AND "
-      "u.model<>'<synthetic>'),"
+      "u.model<>'<synthetic>' %s),"
       "(SELECT COUNT(*) FROM tool_calls t JOIN sessions ts ON "
-      "ts.session_id=t.session_id WHERE ts.source=s.source),"
+      "ts.session_id=t.session_id WHERE ts.source=s.source %s),"
       "(SELECT COUNT(DISTINCT c.source_path || ':' || c.line_number) FROM "
       "code_changes c JOIN sessions cs ON cs.session_id=c.session_id WHERE "
-      "cs.source=s.source) "
-      "FROM sessions s GROUP BY s.source ORDER BY s.source";
+      "cs.source=s.source %s) "
+      "FROM sessions s %s GROUP BY s.source ORDER BY s.source",
+      u_and, u_and, u_and, u_and, t_and, c_and, sess_w);
+
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
     sqlite3_close(db);
     return -1;
@@ -607,25 +664,29 @@ int load_source_stats(AgentSourceStats stats[], int max_sources) {
   return count;
 }
 
+int load_source_stats(AgentSourceStats stats[], int max_sources) {
+  return load_source_stats_filtered(stats, max_sources, NULL, NULL);
+}
+
 /**
- * @brief 加载各个模型的使用情况统计数据
- *
- * 从 model_usage_events 和 model_selection_events
- * 表中提取每个来源和模型的使用信息， 统计总调用次数、选择次数和各类 Token
- * 消耗量，并按照使用量倒序排列。
- *
- * @param stats 输出统计结果的数组
- * @param max_models 数组的最大容量
- * @return int 成功返回加载的模型记录数量，失败返回 -1
+ * @brief 加载各个模型的使用情况统计数据（支持时间过滤）
  */
-int load_model_stats(AgentModelStats stats[], int max_models) {
+int load_model_stats_filtered(AgentModelStats stats[], int max_models,
+                              const char *start_date, const char *end_date) {
   if (!stats || max_models <= 0)
     return -1;
   sqlite3 *db = NULL;
   sqlite3_stmt *stmt = NULL;
   if (!open_database(&db))
     return -1;
-  const char *sql =
+
+  char u_and[128] = {0};
+  char m_and[128] = {0};
+  append_date_clause(u_and, sizeof(u_and), "u.timestamp", start_date, end_date, true);
+  append_date_clause(m_and, sizeof(m_and), "m.timestamp", start_date, end_date, true);
+
+  char sql[4096];
+  snprintf(sql, sizeof(sql),
       "WITH raw AS ("
       " SELECT s.source,u.model,COUNT(*) model_calls,0 selections,"
       " SUM(u.input_tokens) input_tokens,SUM(u.cached_input_tokens) "
@@ -633,11 +694,11 @@ int load_model_stats(AgentModelStats stats[], int max_models) {
       " SUM(u.cache_write_input_tokens) "
       "cache_write_input_tokens,SUM(u.output_tokens) output_tokens"
       " FROM model_usage_events u JOIN sessions s ON s.session_id=u.session_id"
-      " WHERE u.model<>'' AND u.model<>'<synthetic>' GROUP BY s.source,u.model"
+      " WHERE u.model<>'' AND u.model<>'<synthetic>' %s GROUP BY s.source,u.model"
       " UNION ALL"
       " SELECT s.source,m.model,0,COUNT(*),0,0,0,0 FROM model_selection_events "
       "m"
-      " JOIN sessions s ON s.session_id=m.session_id WHERE m.model<>'' GROUP "
+      " JOIN sessions s ON s.session_id=m.session_id WHERE m.model<>'' %s GROUP "
       "BY s.source,m.model"
       "), totals AS (SELECT source,model,SUM(model_calls) "
       "model_calls,SUM(selections) selections,"
@@ -654,7 +715,9 @@ int load_model_stats(AgentModelStats stats[], int max_models) {
       "FROM totals t LEFT JOIN model_pricing p ON p.source=t.source AND "
       "p.model=t.model"
       " ORDER BY t.input_tokens+t.output_tokens DESC,t.selections "
-      "DESC,t.source,t.model";
+      "DESC,t.source,t.model",
+      u_and, m_and);
+
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
     sqlite3_close(db);
     return -1;
@@ -696,24 +759,27 @@ int load_model_stats(AgentModelStats stats[], int max_models) {
   return count;
 }
 
+int load_model_stats(AgentModelStats stats[], int max_models) {
+  return load_model_stats_filtered(stats, max_models, NULL, NULL);
+}
+
 /**
- * @brief 加载最近的会话统计数据
- *
- * 查询最新的若干个会话记录，并关联查询每个会话使用过的模型列表、输入输出 Token
- * 总量、 工具调用次数以及代码修改行数。按会话开始时间降序排列。
- *
- * @param stats 输出统计结果的数组
- * @param max_sessions 期望查询的最大会话数
- * @return int 成功返回加载的会话记录数量，失败返回 -1
+ * @brief 加载最近的会话统计数据（支持时间过滤）
  */
-int load_recent_session_stats(AgentSessionStats stats[], int max_sessions) {
+int load_recent_session_stats_filtered(AgentSessionStats stats[], int max_sessions,
+                                       const char *start_date, const char *end_date) {
   if (!stats || max_sessions <= 0)
     return -1;
   sqlite3 *db = NULL;
   sqlite3_stmt *stmt = NULL;
   if (!open_database(&db))
     return -1;
-  const char *sql =
+
+  char sess_w[128] = {0};
+  append_date_clause(sess_w, sizeof(sess_w), "s.started_at", start_date, end_date, false);
+
+  char sql[2048];
+  snprintf(sql, sizeof(sql),
       "SELECT "
       "s.session_id,s.source,COALESCE(s.cwd,''),COALESCE(s.started_at,''),"
       "COALESCE((SELECT GROUP_CONCAT(model,', ') FROM ("
@@ -728,8 +794,9 @@ int load_recent_session_stats(AgentSessionStats stats[], int max_sessions) {
       "(SELECT COUNT(*) FROM tool_calls t WHERE t.session_id=s.session_id),"
       "(SELECT COUNT(DISTINCT c.source_path || ':' || c.line_number) FROM "
       "code_changes c WHERE c.session_id=s.session_id)"
-      " FROM sessions s ORDER BY datetime(s.started_at) DESC,s.imported_at "
-      "DESC LIMIT ?1";
+      " FROM sessions s %s ORDER BY datetime(s.started_at) DESC,s.imported_at "
+      "DESC LIMIT ?1", sess_w);
+
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
     sqlite3_close(db);
     return -1;
@@ -758,6 +825,10 @@ int load_recent_session_stats(AgentSessionStats stats[], int max_sessions) {
   return count;
 }
 
+int load_recent_session_stats(AgentSessionStats stats[], int max_sessions) {
+  return load_recent_session_stats_filtered(stats, max_sessions, NULL, NULL);
+}
+
 /**
  * @brief 加载各类工具的调用统计数据
  *
@@ -768,17 +839,27 @@ int load_recent_session_stats(AgentSessionStats stats[], int max_sessions) {
  * @param max_tools 数组的最大容量
  * @return int 成功返回加载的工具记录数量，失败返回 -1
  */
-int load_tool_stats(AgentToolStats stats[], int max_tools) {
+/**
+ * @brief 加载各类工具的调用统计数据（支持时间过滤）
+ */
+int load_tool_stats_filtered(AgentToolStats stats[], int max_tools,
+                             const char *start_date, const char *end_date) {
   if (!stats || max_tools <= 0)
     return -1;
   sqlite3 *db = NULL;
   sqlite3_stmt *stmt = NULL;
   if (!open_database(&db))
     return -1;
-  const char *sql =
+
+  char tool_w[128] = {0};
+  append_date_clause(tool_w, sizeof(tool_w), "timestamp", start_date, end_date, false);
+
+  char sql[2048];
+  snprintf(sql, sizeof(sql),
       "SELECT tool_name,COALESCE(detail_name,''),COUNT(*),SUM(is_mcp) FROM "
-      "tool_calls GROUP BY tool_name,detail_name ORDER BY COUNT(*) DESC LIMIT "
-      "?1";
+      "tool_calls %s GROUP BY tool_name,detail_name ORDER BY COUNT(*) DESC LIMIT "
+      "?1", tool_w);
+
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
     sqlite3_close(db);
     return -1;
@@ -798,6 +879,10 @@ int load_tool_stats(AgentToolStats stats[], int max_tools) {
   sqlite3_finalize(stmt);
   sqlite3_close(db);
   return count;
+}
+
+int load_tool_stats(AgentToolStats stats[], int max_tools) {
+  return load_tool_stats_filtered(stats, max_tools, NULL, NULL);
 }
 
 static bool path_is_dir(const char *path) {
@@ -897,14 +982,29 @@ static bool extract_workspace_root(const char *path, const char *anchor,
   return true;
 }
 
-int load_project_stats(AgentProjectStats stats[], int max_projects) {
+/**
+ * @brief 加载按项目归类的使用与代码统计数据（支持时间过滤）
+ */
+int load_project_stats_filtered(AgentProjectStats stats[], int max_projects,
+                                const char *start_date, const char *end_date) {
   if (!stats || max_projects <= 0)
     return -1;
   sqlite3 *db = NULL;
   sqlite3_stmt *stmt = NULL;
   if (!open_database(&db))
     return -1;
-  const char *sql =
+
+  char sess_w[128] = {0};
+  char u_w[128] = {0};
+  char t_w[128] = {0};
+  char c_w[128] = {0};
+  append_date_clause(sess_w, sizeof(sess_w), "started_at", start_date, end_date, false);
+  append_date_clause(u_w, sizeof(u_w), "timestamp", start_date, end_date, true);
+  append_date_clause(t_w, sizeof(t_w), "timestamp", start_date, end_date, false);
+  append_date_clause(c_w, sizeof(c_w), "timestamp", start_date, end_date, false);
+
+  char sql[4096];
+  snprintf(sql, sizeof(sql),
       "SELECT s.source, COALESCE(s.cwd,''), COALESCE(cf.file_path,''),"
       " COALESCE(u.in_tok,0), COALESCE(u.out_tok,0),"
       " COALESCE(t.tool_cnt,0), COALESCE(c.code_cnt,0),"
@@ -912,18 +1012,20 @@ int load_project_stats(AgentProjectStats stats[], int max_projects) {
       "FROM sessions s "
       "LEFT JOIN ("
       "  SELECT session_id, SUM(input_tokens) AS in_tok, SUM(output_tokens) AS out_tok "
-      "  FROM model_usage_events WHERE model<>'<synthetic>' GROUP BY session_id"
+      "  FROM model_usage_events WHERE model<>'<synthetic>' %s GROUP BY session_id"
       ") u ON u.session_id = s.session_id "
       "LEFT JOIN ("
-      "  SELECT session_id, COUNT(*) AS tool_cnt FROM tool_calls GROUP BY session_id"
+      "  SELECT session_id, COUNT(*) AS tool_cnt FROM tool_calls %s GROUP BY session_id"
       ") t ON t.session_id = s.session_id "
       "LEFT JOIN ("
       "  SELECT session_id, COUNT(DISTINCT source_path||':'||line_number) AS code_cnt,"
-      "  SUM(lines_added) AS add_cnt, SUM(lines_deleted) AS del_cnt FROM code_changes GROUP BY session_id"
+      "  SUM(lines_added) AS add_cnt, SUM(lines_deleted) AS del_cnt FROM code_changes %s GROUP BY session_id"
       ") c ON c.session_id = s.session_id "
       "LEFT JOIN ("
       "  SELECT session_id, file_path FROM code_changes WHERE file_path<>'' GROUP BY session_id"
-      ") cf ON cf.session_id = s.session_id";
+      ") cf ON cf.session_id = s.session_id %s",
+      u_w, t_w, c_w, sess_w);
+
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
     sqlite3_close(db);
     return -1;
@@ -981,18 +1083,23 @@ int load_project_stats(AgentProjectStats stats[], int max_projects) {
   sqlite3_finalize(stmt);
 
   // 查询各文件路径的候选行与已采纳行数 (极速索引查找)
-  const char *attr_sql =
+  char af_and[128] = {0};
+  append_date_clause(af_and, sizeof(af_and), "timestamp", start_date, end_date, true);
+
+  char attr_sql[2048];
+  snprintf(attr_sql, sizeof(attr_sql),
       "WITH agent_groups AS ("
       " SELECT file_path, fingerprint, COUNT(*) AS candidate_count"
       " FROM agent_line_fingerprints"
-      " WHERE category<>'generated'"
+      " WHERE category<>'generated' %s"
       " GROUP BY file_path, fingerprint"
       "), matched AS ("
       " SELECT a.file_path, a.candidate_count,"
       " CASE WHEN EXISTS (SELECT 1 FROM git_line_fingerprints l WHERE l.fingerprint=a.fingerprint) THEN a.candidate_count ELSE 0 END AS accepted"
       " FROM agent_groups a"
       ") SELECT file_path, COALESCE(SUM(candidate_count),0), COALESCE(SUM(accepted),0)"
-      " FROM matched GROUP BY file_path";
+      " FROM matched GROUP BY file_path", af_and);
+
   sqlite3_stmt *attr_stmt = NULL;
   if (sqlite3_prepare_v2(db, attr_sql, -1, &attr_stmt, NULL) == SQLITE_OK) {
     while (sqlite3_step(attr_stmt) == SQLITE_ROW) {
@@ -1036,17 +1143,28 @@ int load_project_stats(AgentProjectStats stats[], int max_projects) {
   return count;
 }
 
-int load_mcp_stats(AgentCapabilityStats stats[], int max_rows) {
+int load_project_stats(AgentProjectStats stats[], int max_projects) {
+  return load_project_stats_filtered(stats, max_projects, NULL, NULL);
+}
+
+int load_mcp_stats_filtered(AgentCapabilityStats stats[], int max_rows,
+                           const char *start_date, const char *end_date) {
   if (!stats || max_rows <= 0)
     return -1;
   sqlite3 *db = NULL;
   sqlite3_stmt *stmt = NULL;
   if (!open_database(&db))
     return -1;
-  const char *sql =
+
+  char tool_w[128] = {0};
+  append_date_clause(tool_w, sizeof(tool_w), "t.timestamp", start_date, end_date, true);
+
+  char sql[2048];
+  snprintf(sql, sizeof(sql),
       "SELECT t.tool_name,s.source,COUNT(*) FROM tool_calls t JOIN sessions s "
-      "ON s.session_id=t.session_id WHERE t.is_mcp=1 GROUP BY "
-      "t.tool_name,s.source ORDER BY COUNT(*) DESC LIMIT ?1";
+      "ON s.session_id=t.session_id WHERE t.is_mcp=1 %s GROUP BY "
+      "t.tool_name,s.source ORDER BY COUNT(*) DESC LIMIT ?1", tool_w);
+
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
     sqlite3_close(db);
     return -1;
@@ -1075,19 +1193,30 @@ int load_mcp_stats(AgentCapabilityStats stats[], int max_rows) {
   return count;
 }
 
-int load_skill_stats(AgentCapabilityStats stats[], int max_rows) {
+int load_mcp_stats(AgentCapabilityStats stats[], int max_rows) {
+  return load_mcp_stats_filtered(stats, max_rows, NULL, NULL);
+}
+
+int load_skill_stats_filtered(AgentCapabilityStats stats[], int max_rows,
+                             const char *start_date, const char *end_date) {
   if (!stats || max_rows <= 0)
     return -1;
   sqlite3 *db = NULL;
   sqlite3_stmt *stmt = NULL;
   if (!open_database(&db))
     return -1;
-  const char *sql =
+
+  char tool_w[128] = {0};
+  append_date_clause(tool_w, sizeof(tool_w), "t.timestamp", start_date, end_date, true);
+
+  char sql[2048];
+  snprintf(sql, sizeof(sql),
       "SELECT COALESCE(NULLIF(t.detail_name,''),'未识别 "
       "Skill'),s.source,COUNT(*) FROM tool_calls t JOIN sessions s ON "
-      "s.session_id=t.session_id WHERE lower(t.tool_name)='skill' GROUP BY "
+      "s.session_id=t.session_id WHERE lower(t.tool_name)='skill' %s GROUP BY "
       "COALESCE(NULLIF(t.detail_name,''),'未识别 Skill'),s.source ORDER BY "
-      "COUNT(*) DESC LIMIT ?1";
+      "COUNT(*) DESC LIMIT ?1", tool_w);
+
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
     sqlite3_close(db);
     return -1;
@@ -1105,6 +1234,10 @@ int load_skill_stats(AgentCapabilityStats stats[], int max_rows) {
   sqlite3_finalize(stmt);
   sqlite3_close(db);
   return count;
+}
+
+int load_skill_stats(AgentCapabilityStats stats[], int max_rows) {
+  return load_skill_stats_filtered(stats, max_rows, NULL, NULL);
 }
 
 bool set_model_pricing(const char *source, const char *model, double input_rate,
@@ -1173,27 +1306,42 @@ int load_model_pricing(AgentModelStats stats[], int max_models) {
   return count;
 }
 
-int load_period_stats(AgentPeriodStats stats[], int max_rows,
-                      const char *period) {
+int load_period_stats_filtered(AgentPeriodStats stats[], int max_rows,
+                              const char *period, const char *start_date,
+                              const char *end_date) {
   if (!stats || max_rows <= 0 || !period)
     return -1;
   const char *bucket_expr = NULL;
-  const char *calendar_start = NULL, *calendar_step = NULL;
+  char calendar_start[128] = {0};
+  const char *calendar_step = NULL;
   if (strcmp(period, "day") == 0) {
     bucket_expr = "date(%s,'localtime')";
-    calendar_start = "date('now','localtime')";
+    if (end_date && end_date[0]) {
+      snprintf(calendar_start, sizeof(calendar_start), "date('%s')", end_date);
+    } else {
+      snprintf(calendar_start, sizeof(calendar_start), "date('now','localtime')");
+    }
     calendar_step = "-1 day";
   } else if (strcmp(period, "week") == 0) {
     bucket_expr =
         "date(%s,'localtime','-' || ((CAST(strftime('%%w',%s,'localtime') AS "
         "INTEGER)+6) %% 7) || ' days')";
-    calendar_start =
-        "date('now','localtime','-' || ((CAST(strftime('%w','now','localtime') "
-        "AS INTEGER)+6) % 7) || ' days')";
+    if (end_date && end_date[0]) {
+      snprintf(calendar_start, sizeof(calendar_start),
+               "date('%s','-' || ((CAST(strftime('%%w','%s') AS INTEGER)+6) %% 7) || ' days')",
+               end_date, end_date);
+    } else {
+      snprintf(calendar_start, sizeof(calendar_start),
+               "date('now','localtime','-' || ((CAST(strftime('%%w','now','localtime') AS INTEGER)+6) %% 7) || ' days')");
+    }
     calendar_step = "-7 days";
   } else if (strcmp(period, "month") == 0) {
     bucket_expr = "strftime('%%Y-%%m-01',%s,'localtime')";
-    calendar_start = "strftime('%Y-%m-01','now','localtime')";
+    if (end_date && end_date[0]) {
+      snprintf(calendar_start, sizeof(calendar_start), "strftime('%%Y-%%m-01','%s')", end_date);
+    } else {
+      snprintf(calendar_start, sizeof(calendar_start), "strftime('%%Y-%%m-01','now','localtime')");
+    }
     calendar_step = "-1 month";
   } else
     return -1;
@@ -1217,11 +1365,16 @@ int load_period_stats(AgentPeriodStats stats[], int max_rows,
     snprintf(code_bucket, sizeof(code_bucket), bucket_expr, "c.timestamp");
   }
 
+  char cal_filter[128] = {0};
+  if (start_date && start_date[0]) {
+    snprintf(cal_filter, sizeof(cal_filter), "AND bucket >= '%s'", start_date);
+  }
+
   char sql[8192];
   int written = snprintf(
       sql, sizeof(sql),
       "WITH RECURSIVE calendar(bucket,n) AS (SELECT %s,0 UNION ALL SELECT "
-      "date(bucket,'%s'),n+1 FROM calendar WHERE n+1<?1),"
+      "date(bucket,'%s'),n+1 FROM calendar WHERE n+1<?1 %s),"
       "session_stats AS (SELECT %s bucket,COUNT(*) sessions FROM sessions s "
       "WHERE s.started_at<>'' GROUP BY bucket),"
       "usage_stats AS (SELECT %s bucket,COUNT(*) "
@@ -1259,7 +1412,7 @@ int load_period_stats(AgentPeriodStats stats[], int max_rows,
       "usage_stats u USING(bucket) LEFT JOIN tool_stats t USING(bucket) LEFT "
       "JOIN code_stats c USING(bucket) "
       "ORDER BY b.bucket DESC",
-      calendar_start, calendar_step, session_bucket, usage_bucket, tool_bucket,
+      calendar_start, calendar_step, cal_filter, session_bucket, usage_bucket, tool_bucket,
       code_bucket);
   if (written < 0 || (size_t)written >= sizeof(sql))
     return -1;
@@ -1299,17 +1452,16 @@ int load_period_stats(AgentPeriodStats stats[], int max_rows,
   return count;
 }
 
+int load_period_stats(AgentPeriodStats stats[], int max_rows,
+                      const char *period) {
+  return load_period_stats_filtered(stats, max_rows, period, NULL, NULL);
+}
+
 /**
- * @brief 加载代码修改的总体统计数据
- *
- * 统计涉及修改的文件数、总共的添加/删除行数，以及按照业务、测试、文档等分类归总的修改代码行数。
- * 并计算业务代码在已分类代码中所占的百分比。
- *
- * @param stats 用于输出统计结果的 AgentCodeStats 结构体指针
- * @return true 加载成功
- * @return false 加载失败
+ * @brief 加载代码变更的统计数据（支持时间过滤）
  */
-bool load_code_stats(AgentCodeStats *stats) {
+bool load_code_stats_filtered(AgentCodeStats *stats, const char *start_date,
+                              const char *end_date) {
   if (!stats)
     return false;
   memset(stats, 0, sizeof(*stats));
@@ -1317,7 +1469,12 @@ bool load_code_stats(AgentCodeStats *stats) {
   sqlite3_stmt *stmt = NULL;
   if (!open_database(&db))
     return false;
-  const char *sql =
+
+  char code_w[128] = {0};
+  append_date_clause(code_w, sizeof(code_w), "timestamp", start_date, end_date, false);
+
+  char sql[2048];
+  snprintf(sql, sizeof(sql),
       "SELECT COUNT(DISTINCT source_path || ':' || line_number),COUNT(DISTINCT "
       "file_path),"
       "COALESCE(SUM(lines_added),0),COALESCE(SUM(lines_deleted),0),"
@@ -1329,7 +1486,8 @@ bool load_code_stats(AgentCodeStats *stats) {
       "COALESCE(SUM(CASE WHEN category='generated' THEN lines_added ELSE 0 "
       "END),0),"
       "COALESCE(SUM(CASE WHEN category='other' THEN lines_added ELSE 0 END),0) "
-      "FROM code_changes";
+      "FROM code_changes %s", code_w);
+
   bool ok = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK &&
             sqlite3_step(stmt) == SQLITE_ROW;
   if (ok) {
@@ -1354,17 +1512,15 @@ bool load_code_stats(AgentCodeStats *stats) {
   return ok;
 }
 
+bool load_code_stats(AgentCodeStats *stats) {
+  return load_code_stats_filtered(stats, NULL, NULL);
+}
+
 /**
- * @brief 加载 Git 仓库及代码提交的统计数据
- *
- * 查询同步的 Git 仓库数、提交记录总数，并从 git_commit_files
- * 表中统计各个代码分类下的添加/删除行数。
- *
- * @param stats 用于输出统计结果的 AgentGitStats 结构体指针
- * @return true 加载成功
- * @return false 加载失败
+ * @brief 加载 Git 仓库及代码提交的统计数据（支持时间过滤）
  */
-bool load_git_stats(AgentGitStats *stats) {
+bool load_git_stats_filtered(AgentGitStats *stats, const char *start_date,
+                             const char *end_date) {
   if (!stats)
     return false;
   memset(stats, 0, sizeof(*stats));
@@ -1372,19 +1528,26 @@ bool load_git_stats(AgentGitStats *stats) {
   sqlite3_stmt *stmt = NULL;
   if (!open_database(&db))
     return false;
-  const char *sql =
+
+  char git_w[128] = {0};
+  append_date_clause(git_w, sizeof(git_w), "c.authored_at", start_date, end_date, false);
+
+  char sql[2048];
+  snprintf(sql, sizeof(sql),
       "SELECT (SELECT COUNT(*) FROM git_repositories),(SELECT COUNT(*) FROM "
-      "git_commits),"
-      "COUNT(*),COALESCE(SUM(lines_added),0),COALESCE(SUM(lines_deleted),0),"
-      "COALESCE(SUM(CASE WHEN category='business' THEN lines_added ELSE 0 "
+      "git_commits %s),"
+      "COUNT(*),COALESCE(SUM(f.lines_added),0),COALESCE(SUM(f.lines_deleted),0),"
+      "COALESCE(SUM(CASE WHEN f.category='business' THEN f.lines_added ELSE 0 "
       "END),0),"
-      "COALESCE(SUM(CASE WHEN category='test' THEN lines_added ELSE 0 END),0),"
-      "COALESCE(SUM(CASE WHEN category='documentation' THEN lines_added ELSE 0 "
+      "COALESCE(SUM(CASE WHEN f.category='test' THEN f.lines_added ELSE 0 END),0),"
+      "COALESCE(SUM(CASE WHEN f.category='documentation' THEN f.lines_added ELSE 0 "
       "END),0),"
-      "COALESCE(SUM(CASE WHEN category='generated' THEN lines_added ELSE 0 "
+      "COALESCE(SUM(CASE WHEN f.category='generated' THEN f.lines_added ELSE 0 "
       "END),0),"
-      "COALESCE(SUM(CASE WHEN category='other' THEN lines_added ELSE 0 END),0) "
-      "FROM git_commit_files";
+      "COALESCE(SUM(CASE WHEN f.category='other' THEN f.lines_added ELSE 0 END),0) "
+      "FROM git_commit_files f JOIN git_commits c ON c.repo_path=f.repo_path AND c.commit_hash=f.commit_hash %s",
+      git_w, git_w);
+
   bool ok = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK &&
             sqlite3_step(stmt) == SQLITE_ROW;
   if (ok) {
@@ -1404,19 +1567,15 @@ bool load_git_stats(AgentGitStats *stats) {
   return ok;
 }
 
+bool load_git_stats(AgentGitStats *stats) {
+  return load_git_stats_filtered(stats, NULL, NULL);
+}
+
 /**
- * @brief 加载代码采纳/归因 (Attribution) 的统计数据
- *
- * 通过对比 Agent 生成的代码指纹 (agent_line_fingerprints) 和实际提交到 Git
- * 仓库的代码指纹 (git_line_fingerprints)，
- * 计算模型生成的代码有多少行最终被采纳提交到了代码库。
- * 同时也对不同类别（业务逻辑、测试、文档）的代码分别统计采纳率。
- *
- * @param stats 用于输出统计结果的 AgentAttributionStats 结构体指针
- * @return true 加载成功
- * @return false 加载失败
+ * @brief 加载代码采纳/归因 (Attribution) 的统计数据（支持时间过滤）
  */
-bool load_attribution_stats(AgentAttributionStats *stats) {
+bool load_attribution_stats_filtered(AgentAttributionStats *stats,
+                                     const char *start_date, const char *end_date) {
   if (!stats)
     return false;
   memset(stats, 0, sizeof(*stats));
@@ -1424,11 +1583,16 @@ bool load_attribution_stats(AgentAttributionStats *stats) {
   sqlite3_stmt *stmt = NULL;
   if (!open_database(&db))
     return false;
-  const char *sql =
+
+  char af_and[128] = {0};
+  append_date_clause(af_and, sizeof(af_and), "a.timestamp", start_date, end_date, true);
+
+  char sql[2048];
+  snprintf(sql, sizeof(sql),
       "WITH agent_groups AS ("
       " SELECT a.fingerprint, a.category, COUNT(*) AS candidate_count"
       " FROM agent_line_fingerprints a"
-      " WHERE a.category <> 'generated'"
+      " WHERE a.category <> 'generated' %s"
       " GROUP BY a.fingerprint, a.category"
       "), matched AS ("
       " SELECT a.category, a.candidate_count,"
@@ -1440,7 +1604,9 @@ bool load_attribution_stats(AgentAttributionStats *stats) {
       " COALESCE(SUM(CASE WHEN category='test' THEN candidate_count ELSE 0 END),0),"
       " COALESCE(SUM(CASE WHEN category='test' THEN accepted ELSE 0 END),0),"
       " COALESCE(SUM(CASE WHEN category='documentation' THEN candidate_count ELSE 0 END),0),"
-      " COALESCE(SUM(CASE WHEN category='documentation' THEN accepted ELSE 0 END),0) FROM matched";
+      " COALESCE(SUM(CASE WHEN category='documentation' THEN accepted ELSE 0 END),0) FROM matched",
+      af_and);
+
   bool ok = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK &&
             sqlite3_step(stmt) == SQLITE_ROW;
   if (ok) {
@@ -1486,6 +1652,10 @@ bool load_attribution_stats(AgentAttributionStats *stats) {
 
   sqlite3_close(db);
   return ok;
+}
+
+bool load_attribution_stats(AgentAttributionStats *stats) {
+  return load_attribution_stats_filtered(stats, NULL, NULL);
 }
 
 /**
