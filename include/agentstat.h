@@ -48,7 +48,15 @@ typedef struct {
   long tool_calls;               // 工具调用总数
   long mcp_calls;                // MCP（Model Context Protocol）调用总数
   long distinct_tools;           // 调用的不同工具数量
-  double cache_hit_rate;         // 缓存命中率
+  double cache_hit_rate;         // 缓存命中率 (%)
+  double avg_tools_per_session;  // 平均单次会话工具调用次数
+  double tool_success_rate;      // 工具调用成功率 (%)
+  long successful_sessions;      // 成功产生采纳或有效代码的会话数
+  long failed_sessions;          // 失败/未产生代码的会话数
+  long successful_tokens;        // 成功任务消耗的 Token 总量
+  long failed_tokens;            // 失败任务消耗的 Token 总量
+  double avg_tokens_per_successful_session; // 平均单成功任务 Token 消耗
+  double failed_token_ratio;     // 失败会话 Token 占比 (%)
 } AgentUsageStats;
 
 // 最大支持统计的代理来源数量
@@ -114,6 +122,11 @@ typedef struct {
   long output_tokens;
   long tool_calls;
   long code_changes;
+  long lines_added;
+  long lines_deleted;
+  long candidate_lines;
+  long accepted_lines;
+  double acceptance_rate;
 } AgentProjectStats;
 
 typedef struct {
@@ -178,8 +191,13 @@ typedef struct {
   long test_accepted_lines;           // 测试采纳代码行数
   long documentation_candidate_lines; // 文档候选代码行数
   long documentation_accepted_lines;  // 文档采纳代码行数
-  double acceptance_rate;             // 总体采纳率
+  double acceptance_rate;             // 总体采纳率 (行维度)
   double business_acceptance_rate;    // 业务代码采纳率
+  long proposing_sessions;            // 产生建议代码的会话总数
+  long accepted_sessions;             // 至少有 1 行代码被 Git 采纳的会话数
+  double session_acceptance_rate;     // 会话维度代码采纳率 (%)
+  long git_total_lines_added;         // Git 提交代码新增总行数
+  double ai_git_merge_share;          // AI 生成代码在 Git 总提交新增中的最终合并占比 (%)
 } AgentAttributionStats;
 
 #endif // AGENTSTAT_H

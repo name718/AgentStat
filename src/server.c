@@ -32,8 +32,13 @@ static int g_server_fd = -1;
 // 后台自动定时同步线程
 static void *background_sync_worker(void *arg) {
   (void)arg;
-  // 启动后首先静默执行一次同步
-  sync_all_sources(false);
+  // 启动后等待 2 秒，确保前端首次并发页面请求秒级返回，随后再静默同步
+  for (int i = 0; i < 2 && g_server_running; i++) {
+    sleep(1);
+  }
+  if (g_server_running) {
+    sync_all_sources(false);
+  }
 
   while (g_server_running) {
     for (int i = 0; i < AUTO_SYNC_INTERVAL_SEC && g_server_running; i++) {
@@ -192,6 +197,124 @@ static void handle_options(int client_fd) {
   const char *extra = "Access-Control-Max-Age: 86400\r\n";
   send_http_response(client_fd, "204 No Content", "text/plain", NULL, 0, extra,
                      true);
+}
+
+// 动态字符串缓冲区结构体
+typedef struct {
+  char *data;
+  size_t len;
+  size_t cap;
+} DynBuf;
+
+static void dynbuf_init(DynBuf *b, size_t initial_cap) {
+  b->cap = initial_cap > 0 ? initial_cap : 16384;
+  b->data = (char *)malloc(b->cap);
+  b->len = 0;
+  if (b->data)
+    b->data[0] = '\0';
+}
+
+static void dynbuf_append(DynBuf *b, const char *str) {
+  if (!b || !b->data || !str)
+    return;
+  size_t slen = strlen(str);
+  if (b->len + slen + 1 > b->cap) {
+    size_t new_cap = (b->len + slen + 1) * 2;
+    char *new_data = (char *)realloc(b->data, new_cap);
+    if (!new_data)
+      return;
+    b->data = new_data;
+    b->cap = new_cap;
+  }
+  memcpy(b->data + b->len, str, slen);
+  b->len += slen;
+  b->data[b->len] = '\0';
+}
+
+static void dynbuf_free(DynBuf *b) {
+  if (b && b->data) {
+    free(b->data);
+    b->data = NULL;
+    b->len = 0;
+    b->cap = 0;
+  }
+}
+
+// 处理 /api/transcript 或 /api/session_detail 请求，返回会话原始对话流水
+static void handle_api_transcript(int client_fd, const char *session_id,
+                                  bool is_head) {
+  if (!session_id || !session_id[0]) {
+    send_error_response(client_fd, 400, "session id is required", is_head);
+    return;
+  }
+
+  char source[64] = {0};
+  char source_path[1024] = {0};
+  char cwd[1024] = {0};
+  char started_at[128] = {0};
+
+  if (!get_session_source_info(session_id, source, sizeof(source),
+                               source_path, sizeof(source_path),
+                               cwd, sizeof(cwd),
+                               started_at, sizeof(started_at))) {
+    send_error_response(client_fd, 404, "session not found in database",
+                        is_head);
+    return;
+  }
+
+  FILE *fp = fopen(source_path, "r");
+  if (!fp) {
+    send_error_response(client_fd, 404,
+                        "session log file not accessible on disk", is_head);
+    return;
+  }
+
+  DynBuf buf;
+  dynbuf_init(&buf, 65536);
+
+  char esc_session[256], esc_source[64], esc_path[1024], esc_cwd[1024],
+      esc_started[128];
+  json_escape(session_id, esc_session, sizeof(esc_session));
+  json_escape(source, esc_source, sizeof(esc_source));
+  json_escape(source_path, esc_path, sizeof(esc_path));
+  json_escape(cwd, esc_cwd, sizeof(esc_cwd));
+  json_escape(started_at, esc_started, sizeof(esc_started));
+
+  char header[2048];
+  snprintf(header, sizeof(header),
+           "{\"session_id\":\"%s\",\"source\":\"%s\",\"source_path\":\"%s\","
+           "\"cwd\":\"%s\",\"started_at\":\"%s\",\"messages\":[",
+           esc_session, esc_source, esc_path, esc_cwd, esc_started);
+  dynbuf_append(&buf, header);
+
+  char line_buf[65536];
+  int count = 0;
+  while (fgets(line_buf, sizeof(line_buf), fp)) {
+    size_t l = strlen(line_buf);
+    while (l > 0 && (line_buf[l - 1] == '\r' || line_buf[l - 1] == '\n')) {
+      line_buf[--l] = '\0';
+    }
+    if (l == 0)
+      continue;
+
+    const char *p = line_buf;
+    while (*p == ' ' || *p == '\t')
+      p++;
+    if (*p != '{')
+      continue;
+
+    if (count > 0) {
+      dynbuf_append(&buf, ",");
+    }
+    dynbuf_append(&buf, p);
+    count++;
+  }
+
+  fclose(fp);
+  dynbuf_append(&buf, "]}");
+
+  send_json_response(client_fd, "200 OK", buf.data, is_head);
+  dynbuf_free(&buf);
 }
 
 // 处理 /api/sync 请求（手动触发全量日志及 Git 归因同步）
@@ -393,10 +516,13 @@ static void handle_api_projects(int client_fd, bool is_head) {
     snprintf(item, sizeof(item),
              "%s{\"project\":\"%s\",\"project_path\":\"%s\",\"sessions\":%ld,"
              "\"sources\":%ld,\"input_tokens\":%ld,\"output_tokens\":%ld,"
-             "\"tool_calls\":%ld,\"code_changes\":%ld}",
+             "\"tool_calls\":%ld,\"code_changes\":%ld,\"lines_added\":%ld,"
+             "\"lines_deleted\":%ld,\"candidate_lines\":%ld,\"accepted_lines\":%ld,"
+             "\"acceptance_rate\":%.2f}",
              i ? "," : "", name, path, rows[i].sessions, rows[i].sources,
              rows[i].input_tokens, rows[i].output_tokens, rows[i].tool_calls,
-             rows[i].code_changes);
+             rows[i].code_changes, rows[i].lines_added, rows[i].lines_deleted,
+             rows[i].candidate_lines, rows[i].accepted_lines, rows[i].acceptance_rate);
     strcat(json, item);
   }
   strcat(json, "]");
@@ -496,11 +622,18 @@ static void handle_api_usage(int client_fd, bool is_head) {
       "\"cached_input_tokens\":%ld,\"cache_write_input_tokens\":%ld,"
       "\"output_tokens\":%ld,\"reasoning_output_tokens\":%ld,"
       "\"tool_calls\":%ld,\"mcp_calls\":%ld,\"distinct_tools\":%ld,"
-      "\"cache_hit_rate\":%.2f,\"sources\":[",
+      "\"cache_hit_rate\":%.2f,\"avg_tools_per_session\":%.2f,"
+      "\"tool_success_rate\":%.2f,\"successful_sessions\":%ld,"
+      "\"failed_sessions\":%ld,\"successful_tokens\":%ld,\"failed_tokens\":%ld,"
+      "\"avg_tokens_per_successful_session\":%.2f,\"failed_token_ratio\":%.2f,\"sources\":[",
       stats.total_sessions, stats.model_calls, stats.input_tokens,
       stats.cached_input_tokens, stats.cache_write_input_tokens,
       stats.output_tokens, stats.reasoning_output_tokens, stats.tool_calls,
-      stats.mcp_calls, stats.distinct_tools, stats.cache_hit_rate);
+      stats.mcp_calls, stats.distinct_tools, stats.cache_hit_rate,
+      stats.avg_tools_per_session, stats.tool_success_rate,
+      stats.successful_sessions, stats.failed_sessions,
+      stats.successful_tokens, stats.failed_tokens,
+      stats.avg_tokens_per_successful_session, stats.failed_token_ratio);
   AgentSourceStats sources[MAX_AGENT_SOURCES];
   int source_count = load_source_stats(sources, MAX_AGENT_SOURCES);
   for (int i = 0;
@@ -582,6 +715,9 @@ static void handle_api_attribution(int client_fd, bool is_head) {
            "\"documentation_candidate_lines\":%ld,\"documentation_accepted_"
            "lines\":%ld,"
            "\"acceptance_rate\":%.2f,\"business_acceptance_rate\":%.2f,"
+           "\"proposing_sessions\":%ld,\"accepted_sessions\":%ld,"
+           "\"session_acceptance_rate\":%.2f,\"git_total_lines_added\":%ld,"
+           "\"ai_git_merge_share\":%.2f,"
            "\"method\":\"exact_sha256_line_match\",\"generated_files_"
            "excluded\":true}",
            stats.candidate_lines, stats.accepted_lines,
@@ -589,7 +725,9 @@ static void handle_api_attribution(int client_fd, bool is_head) {
            stats.test_candidate_lines, stats.test_accepted_lines,
            stats.documentation_candidate_lines,
            stats.documentation_accepted_lines, stats.acceptance_rate,
-           stats.business_acceptance_rate);
+           stats.business_acceptance_rate, stats.proposing_sessions,
+           stats.accepted_sessions, stats.session_acceptance_rate,
+           stats.git_total_lines_added, stats.ai_git_merge_share);
   send_json_response(client_fd, "200 OK", json_buf, is_head);
 }
 
@@ -609,13 +747,15 @@ static void handle_serve_static(int client_fd, const char *raw_path,
     subpath = raw_path + 4; // 保留前导斜杠
   }
 
-  // 候选搜索根目录（支持项目根目录、bin/ 目录执行、环境变量重定向及系统安装目录）
-  const char *candidate_dirs[5];
+  // 候选搜索根目录（优先使用 Vite 构建产物 web/dist，支持环境变量与上层路径）
+  const char *candidate_dirs[8];
   int dir_count = 0;
   const char *custom_web = getenv("AGENTSTAT_WEB_DIR");
   if (custom_web && custom_web[0] != '\0') {
     candidate_dirs[dir_count++] = custom_web;
   }
+  candidate_dirs[dir_count++] = "web/dist";
+  candidate_dirs[dir_count++] = "../web/dist";
   candidate_dirs[dir_count++] = "web";
   candidate_dirs[dir_count++] = "../web";
   candidate_dirs[dir_count++] = "/usr/local/share/agentstat/web";
@@ -801,6 +941,20 @@ static void process_client_request(int client_fd) {
   } else if (strcmp(path, "/api/sessions") == 0 ||
              strcmp(path, "/api/records") == 0) {
     handle_api_records(client_fd, is_head);
+  } else if (strcmp(path, "/api/transcript") == 0 ||
+             strcmp(path, "/api/session_detail") == 0) {
+    char req_session_id[256] = {0};
+    const char *id_ptr = strstr(query, "id=");
+    if (id_ptr) {
+      id_ptr += 3;
+      const char *end = strchr(id_ptr, '&');
+      size_t id_len = end ? (size_t)(end - id_ptr) : strlen(id_ptr);
+      if (id_len >= sizeof(req_session_id))
+        id_len = sizeof(req_session_id) - 1;
+      strncpy(req_session_id, id_ptr, id_len);
+      req_session_id[id_len] = '\0';
+    }
+    handle_api_transcript(client_fd, req_session_id, is_head);
   } else {
     // 静态资源文件服务
     handle_serve_static(client_fd, path,

@@ -56,4 +56,10 @@ bool load_git_stats(AgentGitStats *stats);
 // 加载代码采纳率等归属相关的统计数据
 bool load_attribution_stats(AgentAttributionStats *stats);
 
+// 查询指定会话的元数据与原始日志路径
+bool get_session_source_info(const char *session_id, char *out_source, size_t source_size,
+                             char *out_path, size_t path_size,
+                             char *out_cwd, size_t cwd_size,
+                             char *out_started_at, size_t time_size);
+
 #endif // STORAGE_H

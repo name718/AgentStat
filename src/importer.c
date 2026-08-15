@@ -586,6 +586,7 @@ bool sync_all_sources(bool verbose) {
              names[i], result.sessions_imported, result.usage_events_imported,
              result.tool_calls_imported, result.code_changes_imported,
              result.files_scanned, result.files_failed);
+      fflush(stdout);
     }
     if (!source_ok)
       ok = false;
@@ -596,15 +597,41 @@ bool sync_all_sources(bool verbose) {
     GitImportResult git;
     bool git_ok = sync_git_repository(".", &git);
     if (verbose) {
-      printf("Git          %ld commits and %ld file changes imported.\n",
+      printf("Git (current) %ld commits and %ld file changes imported.\n",
              git.commits_imported, git.files_imported);
+      fflush(stdout);
     }
     if (!git_ok)
       ok = false;
-  } else if (verbose) {
-    printf("Git          current directory is not a repository; skipped.\n");
+  }
+
+  // 自动发现并同步所有已识别本地项目的 Git 提交历史与指纹
+  AgentProjectStats proj_list[64];
+  int proj_count = load_project_stats(proj_list, 64);
+  if (proj_count > 0) {
+    for (int p = 0; p < proj_count; p++) {
+      if (!proj_list[p].project_path[0] ||
+          strcmp(proj_list[p].project_path, "未识别项目") == 0 ||
+          strcmp(proj_list[p].project_path, ".") == 0) {
+        continue;
+      }
+      char git_sub[1050];
+      snprintf(git_sub, sizeof(git_sub), "%s/.git", proj_list[p].project_path);
+      struct stat git_st;
+      if (stat(git_sub, &git_st) == 0 && S_ISDIR(git_st.st_mode)) {
+        GitImportResult git_res;
+        bool g_ok = sync_git_repository(proj_list[p].project_path, &git_res);
+        if (verbose && (git_res.commits_imported > 0 || git_res.files_imported > 0)) {
+          printf("Git (%-8s) %ld commits, %ld files imported from %s\n",
+                 proj_list[p].project, git_res.commits_imported,
+                 git_res.files_imported, proj_list[p].project_path);
+          fflush(stdout);
+        }
+        if (!g_ok)
+          ok = false;
+      }
+    }
   }
 
   return ok;
 }
-

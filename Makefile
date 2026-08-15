@@ -52,11 +52,20 @@ attribution: $(TARGET)
 web: $(TARGET)
 	@./$(TARGET) web --port 8080
 
+build-web:
+	@cd web && npm install && npm run build
+
+dev-web:
+	@cd web && npm run dev
+
 install: $(TARGET)
 	install -d $(DESTDIR)/usr/local/bin
 	install -m 755 $(TARGET) $(DESTDIR)/usr/local/bin/agentstat
+	install -d $(DESTDIR)/usr/local/share/agentstat/web
+	cp -r web/dist/* $(DESTDIR)/usr/local/share/agentstat/web/
 
 uninstall:
 	rm -f $(DESTDIR)/usr/local/bin/agentstat
+	rm -rf $(DESTDIR)/usr/local/share/agentstat
 
-.PHONY: all clean sync summary list chart usage code attribution web install uninstall
+.PHONY: all clean sync summary list chart usage code attribution web build-web dev-web install uninstall

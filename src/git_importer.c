@@ -192,8 +192,9 @@ static bool insert_git_fingerprint(sqlite3 *db, const char *repo,
 // 调用 git log 输出所有代码更新的 diff 内容，进而提取指纹数据进行归档追踪
 static bool import_git_fingerprints(sqlite3 *db, const char *repo_root) {
   const char *arguments[] = {
-      "log",          "--all",         "--reverse",
-      "--no-renames", "--no-ext-diff", "--format=__AGENTSTAT_COMMIT__%H",
+      "log",          "-n",            "300",
+      "--all",        "--reverse",     "--no-renames",
+      "--no-ext-diff", "--format=__AGENTSTAT_COMMIT__%H",
       "--patch",      "--unified=0",   NULL};
   pid_t child_pid;
   FILE *stream = open_git_stream(repo_root, arguments, &child_pid);
@@ -262,6 +263,8 @@ bool sync_git_repository(const char *path, GitImportResult *result) {
   sqlite3_finalize(repo_stmt);
 
   const char *arguments[] = {"log",
+                             "-n",
+                             "300",
                              "--all",
                              "--reverse",
                              "--no-renames",
