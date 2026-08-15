@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static bool parse_rate(const char *text, double *value) {
   if (!text || !value)
@@ -197,46 +198,34 @@ int parse_and_execute_cli(int argc, char *argv[]) {
   }
 
   // "sync" 命令：综合同步命令，自动依次尝试同步已知的所有 Agent
-  // 平台数据（Codex, Claude, Antigravity） 此外，如果检测到当前目录下存在 .git
-  // 仓库，也会自动进行 Git 提交历史同步
+  // 平台数据（Codex, Claude, Antigravity）与当前 Git 仓库。支持 --watch / -w 循环自动同步
   if (strcmp(subcommand, "sync") == 0) {
-    char codex_path[1024], claude_path[1024], agy_path[1024];
-    const char *paths[] = {
-        source_path("AGENTSTAT_CODEX_DIR", ".codex/sessions", codex_path,
-                    sizeof(codex_path)),
-        source_path("AGENTSTAT_CLAUDE_DIR", ".claude/projects", claude_path,
-                    sizeof(claude_path)),
-        source_path("AGENTSTAT_ANTIGRAVITY_DIR", ".gemini/antigravity-cli",
-                    agy_path, sizeof(agy_path))};
-    const char *names[] = {"Codex", "Claude", "Antigravity"};
-    bool (*syncers[])(const char *, CodexSyncResult *) = {
-        sync_codex_directory, sync_claude_directory,
-        sync_antigravity_directory};
-    bool ok = true;
-    for (int i = 0; i < 3; i++) {
-      struct stat info;
-      if (stat(paths[i], &info) != 0 || !S_ISDIR(info.st_mode)) {
-        printf("%-12s not installed; skipped %s.\n", names[i], paths[i]);
-        continue;
+    int watch_interval = 0;
+    for (int i = 2; i < argc; i++) {
+      if ((strcmp(argv[i], "--watch") == 0 || strcmp(argv[i], "-w") == 0) &&
+          i + 1 < argc) {
+        watch_interval = atoi(argv[++i]);
+      } else if (strcmp(argv[i], "--watch") == 0 || strcmp(argv[i], "-w") == 0) {
+        watch_interval = 30; // 默认30秒
       }
-      CodexSyncResult result;
-      bool source_ok = syncers[i](paths[i], &result);
-      print_sync_result(names[i], &result);
-      if (!source_ok)
-        ok = false;
     }
-    struct stat git_dir;
-    if (stat(".git", &git_dir) == 0 && S_ISDIR(git_dir.st_mode)) {
-      GitImportResult git;
-      bool git_ok = sync_git_repository(".", &git);
-      printf("Git          %ld commits and %ld file changes imported.\n",
-             git.commits_imported, git.files_imported);
-      if (!git_ok)
-        ok = false;
-    } else
-      printf("Git          current directory is not a repository; use sync-git "
-             "<path>.\n");
-    return ok ? 0 : 1;
+
+    if (watch_interval > 0) {
+      printf("Entering auto-sync watch mode (interval: %d seconds, Ctrl+C to stop)...\n",
+             watch_interval);
+      while (1) {
+        time_t now = time(NULL);
+        char time_str[64];
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S",
+                 localtime(&now));
+        printf("\n[%s] Running auto-sync...\n", time_str);
+        sync_all_sources(true);
+        sleep((unsigned int)watch_interval);
+      }
+      return 0;
+    }
+
+    return sync_all_sources(true) ? 0 : 1;
   }
 
   // "usage" 命令：加载并展示汇总后的 Agent 交互和使用量（如各类

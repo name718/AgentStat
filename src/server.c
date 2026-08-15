@@ -1,5 +1,6 @@
 #include "server.h"
 #include "agentstat.h"
+#include "importer.h"
 #include "storage.h"
 
 #include <arpa/inet.h>
@@ -22,10 +23,28 @@
 #define BUFFER_SIZE 65536
 #define MAX_CONCURRENT_CLIENTS 64
 #define SOCKET_TIMEOUT_SEC 5
+#define AUTO_SYNC_INTERVAL_SEC 60
 
 // 全局服务运行状态与套接字，供信号捕获优雅退出
 static volatile sig_atomic_t g_server_running = 1;
 static int g_server_fd = -1;
+
+// 后台自动定时同步线程
+static void *background_sync_worker(void *arg) {
+  (void)arg;
+  // 启动后首先静默执行一次同步
+  sync_all_sources(false);
+
+  while (g_server_running) {
+    for (int i = 0; i < AUTO_SYNC_INTERVAL_SEC && g_server_running; i++) {
+      sleep(1);
+    }
+    if (g_server_running) {
+      sync_all_sources(false);
+    }
+  }
+  return NULL;
+}
 
 // 当前活跃客户端线程计数与锁
 static pthread_mutex_t g_client_count_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -173,6 +192,20 @@ static void handle_options(int client_fd) {
   const char *extra = "Access-Control-Max-Age: 86400\r\n";
   send_http_response(client_fd, "204 No Content", "text/plain", NULL, 0, extra,
                      true);
+}
+
+// 处理 /api/sync 请求（手动触发全量日志及 Git 归因同步）
+static void handle_api_sync(int client_fd, bool is_head) {
+  bool ok = sync_all_sources(false);
+  if (ok) {
+    send_json_response(client_fd, "200 OK",
+                       "{\"status\":\"ok\",\"message\":\"All sources synchronized successfully\"}",
+                       is_head);
+  } else {
+    send_json_response(client_fd, "200 OK",
+                       "{\"status\":\"warning\",\"message\":\"Synchronized with some skipped sources\"}",
+                       is_head);
+  }
 }
 
 // 处理 /api/summary
@@ -733,7 +766,9 @@ static void process_client_request(int client_fd) {
   }
 
   // API 路由分发
-  if (strcmp(path, "/api/summary") == 0) {
+  if (strcmp(path, "/api/sync") == 0) {
+    handle_api_sync(client_fd, is_head);
+  } else if (strcmp(path, "/api/summary") == 0) {
     handle_api_summary(client_fd, is_head);
   } else if (strcmp(path, "/api/usage") == 0) {
     handle_api_usage(client_fd, is_head);
@@ -834,8 +869,15 @@ int start_web_server(int port) {
   printf("   AgentStat 高性能多线程看板服务已启动: http://localhost:%d\n",
          port);
   printf("   支持并发请求、静态文件缓存(ETag)与优雅退出 (按 Ctrl+C 停止)\n");
+  printf("   后台自动同步: 已开启 (每 60 秒自动增量同步所有 Agent 日志)\n");
   printf("====================================================================="
          "===\n\n");
+
+  // 启动后台自动定时同步工作线程
+  pthread_t sync_thread;
+  if (pthread_create(&sync_thread, NULL, background_sync_worker, NULL) == 0) {
+    pthread_detach(sync_thread);
+  }
 
   // 主循环接受并分发客户端连接
   while (g_server_running) {

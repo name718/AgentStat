@@ -83,14 +83,31 @@ make list
 ./bin/agentstat attribution
 ```
 
-### 6. 自动同步 Codex、Claude Code 与 AGY/Antigravity
+### 6. 自动化同步机制 (Auto-Sync)
 
-```bash
-./bin/agentstat sync
-./bin/agentstat usage
-./bin/agentstat code
-./bin/agentstat attribution
-```
+AgentStat 现已支持多种自动同步机制，无需频繁手动执行 `sync`：
+
+1. **Web 看板内置常驻自动同步（推荐）**：
+   启动 Web 服务时，后台会自动启动同步线程，**每 60 秒自动增量同步** 本地所有 Agent 日志及当前 Git 仓库；Web 页面亦提供「⚡ 立即同步日志」按钮。
+   ```bash
+   make web  # 后台每 60s 自动刷新同步
+   ```
+
+2. **CLI 守护监听模式 (`--watch` / `-w`)**：
+   在终端或后台启动持续监听同步，支持自定义间隔秒数（默认 30 秒）：
+   ```bash
+   ./bin/agentstat sync --watch 30
+   ```
+
+3. **系统级定时任务 (Crontab / launchd)**：
+   如需后台静默常驻，可添加系统定时任务：
+   ```bash
+   # 每 10 分钟自动静默同步一次
+   */10 * * * * cd /path/to/agent-cli && ./bin/agentstat sync >/dev/null 2>&1
+   ```
+
+4. **Git post-commit Hook 提交自动归因**：
+   在项目 `.git/hooks/post-commit` 中添加 `./bin/agentstat sync >/dev/null 2>&1`，每次 Git Commit 自动触发即时归因。
 
 `sync` 会自动发现三种 Agent 的标准数据目录，并在当前目录是 Git 仓库时同步当前仓库：
 

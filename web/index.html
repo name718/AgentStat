@@ -1020,6 +1020,20 @@
       const acceptanceRate = attribution ? attribution.acceptance_rate : 0;
       const businessShare = codeStats ? codeStats.business_code_share : 0;
 
+      const [syncing, setSyncing] = useState(false);
+
+      const triggerSync = async () => {
+        setSyncing(true);
+        try {
+          await fetch('/api/sync').then(r => r.json()).catch(() => null);
+          await fetchAllData();
+        } catch (e) {
+          console.error("Sync failed", e);
+        } finally {
+          setSyncing(false);
+        }
+      };
+
       return (
         <div className="container">
           {/* Header */}
@@ -1031,7 +1045,7 @@
                   AgentStat 全景效能看板
                   <span className="status-pill">
                     <span className="status-dot"></span>
-                    已连接本地数据中心
+                    后台自动同步运行中
                   </span>
                 </h1>
                 <p>实时分析 Codex、Claude Code 与 Antigravity 本地工作效率、Token 资产消耗与代码采纳归因</p>
@@ -1060,6 +1074,15 @@
                 </button>
               </div>
 
+              <button 
+                className="btn btn-primary" 
+                onClick={triggerSync}
+                disabled={syncing}
+                style={{background: syncing ? '#475569' : '#0284c7', borderColor: '#38bdf8'}}
+              >
+                {syncing ? '⏳ 正在同步中...' : '⚡ 立即同步日志'}
+              </button>
+
               <button className="btn" onClick={fetchAllData}>
                 🔄 刷新数据
               </button>
@@ -1068,8 +1091,8 @@
                 {autoRefresh ? '🟢 自动刷新中 (30s)' : '⚪ 开启自动刷新'}
               </button>
 
-              <button className="btn btn-primary" onClick={exportCSV}>
-                📥 导出会话 CSV
+              <button className="btn" onClick={exportCSV}>
+                📥 导出 CSV
               </button>
             </div>
           </header>

@@ -47,4 +47,11 @@ bool import_codex_jsonl(const char *path, CodexImportResult *result);
  */
 bool sync_codex_directory(const char *path, CodexSyncResult *result);
 
+/**
+ * @brief 执行全量 Agent 数据源及当前 Git 仓库同步
+ * @param verbose 是否打印同步终端输出
+ * @return 同步成功返回 true
+ */
+bool sync_all_sources(bool verbose);
+
 #endif

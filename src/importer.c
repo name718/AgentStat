@@ -1,4 +1,7 @@
 #include "importer.h"
+#include "claude_importer.h"
+#include "antigravity_importer.h"
+#include "git_importer.h"
 #include "sha256.h"
 #include "storage.h"
 #include <dirent.h>
@@ -537,3 +540,71 @@ bool sync_codex_directory(const char *path, CodexSyncResult *result) {
       realpath(path, canonical_path) ? canonical_path : path;
   return sync_directory_recursive(source_path, result);
 }
+
+// 解析并获取目标数据目录路径
+static const char *get_source_path_helper(const char *env_name, const char *suffix,
+                                          char *buffer, size_t size) {
+  const char *override = getenv(env_name);
+  if (override && *override)
+    return override;
+  const char *home = getenv("HOME");
+  if (!home)
+    home = ".";
+  snprintf(buffer, size, "%s/%s", home, suffix);
+  return buffer;
+}
+
+// 执行全量 Agent 数据源及当前 Git 仓库同步
+bool sync_all_sources(bool verbose) {
+  char codex_path[1024], claude_path[1024], agy_path[1024];
+  const char *paths[] = {
+      get_source_path_helper("AGENTSTAT_CODEX_DIR", ".codex/sessions", codex_path,
+                             sizeof(codex_path)),
+      get_source_path_helper("AGENTSTAT_CLAUDE_DIR", ".claude/projects",
+                             claude_path, sizeof(claude_path)),
+      get_source_path_helper("AGENTSTAT_ANTIGRAVITY_DIR",
+                             ".gemini/antigravity-cli", agy_path,
+                             sizeof(agy_path))};
+  const char *names[] = {"Codex", "Claude", "Antigravity"};
+  bool (*syncers[])(const char *, CodexSyncResult *) = {
+      sync_codex_directory, sync_claude_directory,
+      sync_antigravity_directory};
+
+  bool ok = true;
+  for (int i = 0; i < 3; i++) {
+    struct stat info;
+    if (stat(paths[i], &info) != 0 || !S_ISDIR(info.st_mode)) {
+      if (verbose)
+        printf("%-12s not installed; skipped %s.\n", names[i], paths[i]);
+      continue;
+    }
+    CodexSyncResult result;
+    bool source_ok = syncers[i](paths[i], &result);
+    if (verbose) {
+      printf("%-12s %ld session files, %ld usage events, %ld tool calls, %ld "
+             "code changes (%ld files, %ld failed).\n",
+             names[i], result.sessions_imported, result.usage_events_imported,
+             result.tool_calls_imported, result.code_changes_imported,
+             result.files_scanned, result.files_failed);
+    }
+    if (!source_ok)
+      ok = false;
+  }
+
+  struct stat git_dir;
+  if (stat(".git", &git_dir) == 0 && S_ISDIR(git_dir.st_mode)) {
+    GitImportResult git;
+    bool git_ok = sync_git_repository(".", &git);
+    if (verbose) {
+      printf("Git          %ld commits and %ld file changes imported.\n",
+             git.commits_imported, git.files_imported);
+    }
+    if (!git_ok)
+      ok = false;
+  } else if (verbose) {
+    printf("Git          current directory is not a repository; skipped.\n");
+  }
+
+  return ok;
+}
+
