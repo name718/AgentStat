@@ -577,22 +577,27 @@ static void handle_serve_static(int client_fd, const char *raw_path,
   }
 
   // 候选搜索根目录（支持项目根目录、bin/ 目录执行、环境变量重定向及系统安装目录）
+  const char *candidate_dirs[5];
+  int dir_count = 0;
   const char *custom_web = getenv("AGENTSTAT_WEB_DIR");
-  const char *candidate_dirs[] = {
-      custom_web,
-      "web",
-      "../web",
-      "/usr/local/share/agentstat/web",
-      NULL};
+  if (custom_web && custom_web[0] != '\0') {
+    candidate_dirs[dir_count++] = custom_web;
+  }
+  candidate_dirs[dir_count++] = "web";
+  candidate_dirs[dir_count++] = "../web";
+  candidate_dirs[dir_count++] = "/usr/local/share/agentstat/web";
+  candidate_dirs[dir_count] = NULL;
 
   char file_path[512] = {0};
   struct stat st;
   bool found = false;
 
-  for (int i = 0; candidate_dirs[i] != NULL; i++) {
-    if (!candidate_dirs[i] || candidate_dirs[i][0] == '\0')
-      continue;
-    snprintf(file_path, sizeof(file_path), "%s%s", candidate_dirs[i], subpath);
+  for (int i = 0; i < dir_count; i++) {
+    if (subpath[0] == '/') {
+      snprintf(file_path, sizeof(file_path), "%s%s", candidate_dirs[i], subpath);
+    } else {
+      snprintf(file_path, sizeof(file_path), "%s/%s", candidate_dirs[i], subpath);
+    }
     if (stat(file_path, &st) == 0 && !S_ISDIR(st.st_mode)) {
       found = true;
       break;
