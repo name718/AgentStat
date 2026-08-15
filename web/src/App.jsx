@@ -49,10 +49,12 @@ import {
   ClockCircleOutlined,
   CalendarOutlined,
   HistoryOutlined,
-  FireOutlined
+  FireOutlined,
+  FileDoneOutlined
 } from '@ant-design/icons';
 import EChartComponent from './components/EChartComponent';
 import TranscriptModal from './components/TranscriptModal';
+import WeeklyReport from './components/WeeklyReport';
 
 dayjs.locale('zh-cn');
 const { Header, Content } = Layout;
@@ -738,17 +740,6 @@ export default function App() {
 
             {/* Ant Design Header Controls */}
             <Space size="middle" wrap>
-              <Segmented
-                value={period}
-                onChange={setPeriod}
-                options={[
-                  { label: '每日趋势 (30天)', value: 'day', icon: <CalendarOutlined /> },
-                  { label: '每周趋势 (12周)', value: 'week', icon: <BarChartOutlined /> },
-                  { label: '每月趋势 (12月)', value: 'month', icon: <HistoryOutlined /> }
-                ]}
-                style={{ background: '#1e293b' }}
-              />
-
               <Button
                 type="primary"
                 icon={<SyncOutlined spin={syncing} />}
@@ -780,7 +771,7 @@ export default function App() {
 
         <Content style={{ padding: '20px 28px 60px 28px', maxWidth: 1680, margin: '0 auto', width: '100%' }}>
           <Spin spinning={loading} tip="正在计算全局效能统计指标...">
-            {/* Ant Design RangePicker Toolbar */}
+            {/* 统一全局控制栏：时间范围过滤 + 趋势图聚合粒度 */}
             <Card
               size="small"
               style={{
@@ -790,10 +781,10 @@ export default function App() {
                 boxShadow: '0 4px 20px -2px rgba(0,0,0,0.4)'
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-                <Space size="middle" align="center">
-                  <span style={{ fontWeight: 600, color: '#94a3b8', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <ClockCircleOutlined style={{ color: '#38bdf8' }} /> 时间范围筛选:
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 14 }}>
+                <Space size="middle" align="center" wrap>
+                  <span style={{ fontWeight: 600, color: '#38bdf8', fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <ClockCircleOutlined /> 全局时间范围:
                   </span>
                   <RangePicker
                     presets={rangePresets}
@@ -809,14 +800,28 @@ export default function App() {
                   )}
                 </Space>
 
-                <Space size="small">
+                <Space size="middle" wrap>
+                  <Space size="small" align="center">
+                    <span style={{ fontSize: 12, color: '#94a3b8' }}>趋势图粒度:</span>
+                    <Segmented
+                      value={period}
+                      onChange={setPeriod}
+                      options={[
+                        { label: '按日 (Day)', value: 'day', icon: <CalendarOutlined /> },
+                        { label: '按周 (Week)', value: 'week', icon: <BarChartOutlined /> },
+                        { label: '按月 (Month)', value: 'month', icon: <HistoryOutlined /> }
+                      ]}
+                      style={{ background: '#1e293b' }}
+                    />
+                  </Space>
+
                   <Button
                     size="small"
                     type={autoRefresh ? 'primary' : 'default'}
                     onClick={() => setAutoRefresh(!autoRefresh)}
                     style={{ fontSize: 12 }}
                   >
-                    {autoRefresh ? '🟢 自动刷新 (30s)' : '⚪ 开启自动轮询'}
+                    {autoRefresh ? '🟢 自动轮询 (30s)' : '⚪ 开启轮询'}
                   </Button>
                 </Space>
               </div>
@@ -1300,6 +1305,11 @@ export default function App() {
                       />
                     </Card>
                   )
+                },
+                {
+                  key: 'weekly',
+                  label: <span><FileDoneOutlined /> 📑 智能周报分析与生成</span>,
+                  children: <WeeklyReport />
                 }
               ]}
             />

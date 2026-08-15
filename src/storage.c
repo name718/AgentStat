@@ -422,7 +422,14 @@ static bool open_database(sqlite3 **db) {
     return false;
   }
   sqlite3_busy_timeout(*db, 10000);
-  sqlite3_exec(*db, "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;", NULL, NULL, NULL);
+  sqlite3_exec(*db,
+               "PRAGMA journal_mode=WAL;"
+               "PRAGMA synchronous=NORMAL;"
+               "PRAGMA foreign_keys=ON;"
+               "PRAGMA mmap_size=268435456;"
+               "PRAGMA cache_size=-64000;"
+               "PRAGMA temp_store=MEMORY;",
+               NULL, NULL, NULL);
 
   if (!s_schema_initialized) {
     pthread_mutex_lock(&s_init_mutex);
@@ -1628,11 +1635,15 @@ bool load_attribution_stats_filtered(AgentAttributionStats *stats,
   sqlite3_finalize(stmt);
 
   // 计算会话维度的采纳率 (至少采纳了 1 行代码的会话数 / 产出代码的会话总数)
-  const char *sess_attr_sql =
+  char s_and[128] = {0};
+  append_date_clause(s_and, sizeof(s_and), "a.timestamp", start_date, end_date, true);
+  char sess_attr_sql[1024];
+  snprintf(sess_attr_sql, sizeof(sess_attr_sql),
       "SELECT "
-      " (SELECT COUNT(DISTINCT session_id) FROM agent_line_fingerprints WHERE session_id <> ''),"
-      " (SELECT COUNT(DISTINCT a.session_id) FROM agent_line_fingerprints a JOIN git_line_fingerprints l ON l.fingerprint = a.fingerprint WHERE a.session_id <> ''),"
-      " (SELECT COALESCE(SUM(lines_added), 0) FROM git_commit_files)";
+      " (SELECT COUNT(DISTINCT a.session_id) FROM agent_line_fingerprints a WHERE a.session_id <> '' %s),"
+      " (SELECT COUNT(DISTINCT a.session_id) FROM agent_line_fingerprints a WHERE a.session_id <> '' %s AND EXISTS (SELECT 1 FROM git_line_fingerprints l WHERE l.fingerprint = a.fingerprint)),"
+      " (SELECT COALESCE(SUM(lines_added), 0) FROM git_commit_files)",
+      s_and, s_and);
   sqlite3_stmt *s_stmt = NULL;
   if (sqlite3_prepare_v2(db, sess_attr_sql, -1, &s_stmt, NULL) == SQLITE_OK &&
       sqlite3_step(s_stmt) == SQLITE_ROW) {
