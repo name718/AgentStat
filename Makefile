@@ -1,68 +1,62 @@
-CC = gcc
-CFLAGS = -Wall -Wextra -O2 -Iinclude -std=c11
-LDLIBS = -lsqlite3
+CC ?= gcc
+CFLAGS ?= -Wall -Wextra -O2 -Iinclude -std=c11
+LDLIBS ?= -lsqlite3 -lpthread
 
-SRCS = src/main.c src/cli.c src/stats.c src/storage.c src/sha256.c src/importer.c src/adapter_utils.c src/claude_importer.c src/antigravity_importer.c src/git_importer.c src/ui.c src/server.c
-OBJS = src/main.o src/cli.o src/stats.o src/storage.o src/sha256.o src/importer.o src/adapter_utils.o src/claude_importer.o src/antigravity_importer.o src/git_importer.o src/ui.o src/server.o
-TARGET = agentstat
+BIN_DIR = bin
+BUILD_DIR = build
+TARGET = $(BIN_DIR)/agentstat
 
+SRCS = src/main.c src/cli.c src/stats.c src/storage.c src/sha256.c src/importer.c \
+       src/adapter_utils.c src/claude_importer.c src/antigravity_importer.c \
+       src/git_importer.c src/ui.c src/server.c
+
+OBJS = $(patsubst src/%.c, $(BUILD_DIR)/%.o, $(SRCS))
+
+# Default build target
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
+$(TARGET): $(OBJS) | $(BIN_DIR)
 	$(CC) $(OBJS) -o $(TARGET) $(LDLIBS)
 
-src/main.o: src/main.c
+$(BUILD_DIR)/%.o: src/%.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/cli.o: src/cli.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-src/stats.o: src/stats.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-src/storage.o: src/storage.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-src/sha256.o: src/sha256.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-src/importer.o: src/importer.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-src/adapter_utils.o: src/adapter_utils.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-src/claude_importer.o: src/claude_importer.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-src/antigravity_importer.o: src/antigravity_importer.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-src/git_importer.o: src/git_importer.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-src/ui.o: src/ui.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-src/server.o: src/server.c
-	$(CC) $(CFLAGS) -c $< -o $@
+$(BIN_DIR) $(BUILD_DIR):
+	@mkdir -p $@
 
 clean:
-	rm -f src/*.o $(TARGET)
+	rm -rf $(BUILD_DIR) $(BIN_DIR) agentstat src/*.o
 
-seed: $(TARGET)
-	./$(TARGET) seed
+# CLI shortcuts
+sync: $(TARGET)
+	@./$(TARGET) sync
 
 summary: $(TARGET)
-	./$(TARGET) summary
+	@./$(TARGET) summary
 
 list: $(TARGET)
-	./$(TARGET) list
+	@./$(TARGET) list
 
 chart: $(TARGET)
-	./$(TARGET) chart
+	@./$(TARGET) chart
+
+usage: $(TARGET)
+	@./$(TARGET) usage
+
+code: $(TARGET)
+	@./$(TARGET) code
+
+attribution: $(TARGET)
+	@./$(TARGET) attribution
 
 web: $(TARGET)
-	./$(TARGET) web --port 8080
+	@./$(TARGET) web --port 8080
 
-.PHONY: all clean seed summary list chart web
+install: $(TARGET)
+	install -d $(DESTDIR)/usr/local/bin
+	install -m 755 $(TARGET) $(DESTDIR)/usr/local/bin/agentstat
+
+uninstall:
+	rm -f $(DESTDIR)/usr/local/bin/agentstat
+
+.PHONY: all clean sync summary list chart usage code attribution web install uninstall

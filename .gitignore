@@ -1,7 +1,8 @@
 # C build outputs
 /agentstat
-/src/*.o
+/bin/
 /build/
+/src/*.o
 /cmake-build-*/
 /CMakeFiles/
 /CMakeCache.txt

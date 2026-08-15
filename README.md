@@ -31,7 +31,7 @@ cd agent-cli
 make
 ```
 
-编译成功后，将在根目录下生成二进制可执行文件 `agentstat`。
+编译成功后，将在 `bin/` 目录下生成二进制可执行文件 `bin/agentstat`。
 
 ---
 
@@ -40,14 +40,18 @@ make
 ### 1. 同步并查看真实汇总
 
 ```bash
-./agentstat sync
-./agentstat summary
+./bin/agentstat sync
+./bin/agentstat summary
+# 或者使用 Makefile 快捷指令
+make summary
 ```
 
 ### 2. 启动 Web 可视化看板
 
 ```bash
-./agentstat web --port 8080
+./bin/agentstat web --port 8080
+# 或者
+make web
 ```
 
 打开浏览器访问 [http://localhost:8080](http://localhost:8080)。页面全部读取真实事件 API，不会在空数据时自动生成 mock 数据。
@@ -57,40 +61,44 @@ make
 ### 3. 查看真实模型明细
 
 ```bash
-./agentstat chart
+./bin/agentstat chart
+# 或者
+make chart
 ```
 
 ### 4. 查看最近真实会话
 
 ```bash
-./agentstat list --limit 10
+./bin/agentstat list --limit 10
+# 或者
+make list
 ```
 
 ### 5. 查看分项统计
 
 ```bash
-./agentstat usage
-./agentstat code
-./agentstat git-stats
-./agentstat attribution
+./bin/agentstat usage
+./bin/agentstat code
+./bin/agentstat git-stats
+./bin/agentstat attribution
 ```
 
 ### 6. 自动同步 Codex、Claude Code 与 AGY/Antigravity
 
 ```bash
-./agentstat sync
-./agentstat usage
-./agentstat code
-./agentstat attribution
+./bin/agentstat sync
+./bin/agentstat usage
+./bin/agentstat code
+./bin/agentstat attribution
 ```
 
 `sync` 会自动发现三种 Agent 的标准数据目录，并在当前目录是 Git 仓库时同步当前仓库：
 
-| Agent | 默认数据目录 | Session | Token/缓存 | 工具/MCP | 代码变更 |
-|---|---|---:|---:|---:|---:|
-| Codex | `~/.codex/sessions` | 支持 | 支持 | 支持 | 支持 |
-| Claude Code | `~/.claude/projects` | 支持 | 支持 | 支持 | 支持 |
-| AGY / Antigravity | `~/.gemini/antigravity-cli` | 支持 | 日志暂未暴露稳定字段 | 支持 | 支持 |
+| Agent             | 默认数据目录                | Session |           Token/缓存 | 工具/MCP | 代码变更 |
+| ----------------- | --------------------------- | ------: | -------------------: | -------: | -------: |
+| Codex             | `~/.codex/sessions`         |    支持 |                 支持 |     支持 |     支持 |
+| Claude Code       | `~/.claude/projects`        |    支持 |                 支持 |     支持 |     支持 |
+| AGY / Antigravity | `~/.gemini/antigravity-cli` |    支持 | 日志暂未暴露稳定字段 |     支持 |     支持 |
 
 三种解析器只负责把本地日志转换为统一的 Session、Usage、ToolCall 和 CodeChange 事件，SQLite 统计及 Git 归因层不依赖具体 Agent。Claude Code 的重复消息片段会按消息 ID 去重，只有成功返回的 Edit、Write 和 MultiEdit 才计入代码变更；Antigravity 支持 `replace_file_content`、`multi_replace_file_content` 与 `write_to_file`。
 
@@ -151,21 +159,21 @@ Git 同步只保存规范化仓库路径、commit hash、提交时间、作者�
 
 **字段说明：**
 
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `session_id` | String | 会话唯一 ID (如 `sess_20260806_001`) |
-| `timestamp` | String | ISO8601 格式时间戳 |
-| `project` | String | 所属项目名称 (如 `agent-cli`) |
-| `language` | String | 编程语言 (如 `C`, `TypeScript`, `Go`) |
-| `model` | String | 模型名称 (如 `claude-3-5-sonnet`) |
-| `input_tokens` | Long | Prompt Token 消耗量 |
-| `output_tokens` | Long | Completion Token 消耗量 |
-| `cost_usd` | Double | 自动换算的预估花费 ($ USD) |
-| `lines_suggested` | Int | Agent 推荐的代码总行数 |
-| `lines_accepted` | Int | 用户实际保留/采纳的代码行数 |
-| `snippets_suggested`| Int | 代码块推荐数量 |
-| `snippets_accepted` | Int | 代码块采纳数量 |
-| `duration_sec` | Double | 会话交互响应耗时 (秒) |
+| 字段                 | 类型   | 说明                                  |
+| -------------------- | ------ | ------------------------------------- |
+| `session_id`         | String | 会话唯一 ID (如 `sess_20260806_001`)  |
+| `timestamp`          | String | ISO8601 格式时间戳                    |
+| `project`            | String | 所属项目名称 (如 `agent-cli`)         |
+| `language`           | String | 编程语言 (如 `C`, `TypeScript`, `Go`) |
+| `model`              | String | 模型名称 (如 `claude-3-5-sonnet`)     |
+| `input_tokens`       | Long   | Prompt Token 消耗量                   |
+| `output_tokens`      | Long   | Completion Token 消耗量               |
+| `cost_usd`           | Double | 自动换算的预估花费 ($ USD)            |
+| `lines_suggested`    | Int    | Agent 推荐的代码总行数                |
+| `lines_accepted`     | Int    | 用户实际保留/采纳的代码行数           |
+| `snippets_suggested` | Int    | 代码块推荐数量                        |
+| `snippets_accepted`  | Int    | 代码块采纳数量                        |
+| `duration_sec`       | Double | 会话交互响应耗时 (秒)                 |
 
 ---
 
